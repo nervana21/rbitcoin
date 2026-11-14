@@ -422,14 +422,16 @@ impl Query {
     pub(super) fn repair_lost_sh_tail(&self, far_seal: FarSealCopy) -> Result<bool, QueryError> {
         let path = self.store.path();
         let force = self.sh_force_rebuild();
-        let resume = rbitcoin_store::scripthash::sh_rebuild_resume(path);
+        let mut resume = rbitcoin_store::scripthash::sh_rebuild_resume(path);
         let mut marked = rbitcoin_store::scripthash::sh_rebuild_marked(path);
         let shard_past = self.store.scripthash.shard_offset_past_file()?;
         // Startup discard runs after this and only looks at the marker.
         // A torn bump with no byte would enter Tip and die on the next read.
-        if shard_past && !resume && !marked {
+        // It is a new fault, so it overwrites a resume byte too.
+        if shard_past && (resume || !marked) {
             rbitcoin_store::scripthash::mark_sh_rebuild(path)?;
             marked = true;
+            resume = false;
         }
         let will_wipe = force || ((marked || shard_past) && !resume);
         let rebuild = force || marked || shard_past;

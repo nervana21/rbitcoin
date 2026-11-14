@@ -1878,6 +1878,35 @@ fn sh_shard_offset_past_the_file_rebuilds_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A torn bump is a new fault. It overwrites a resume byte and rebuilds.
+#[test]
+fn sh_shard_offset_past_the_file_overwrites_a_resume_byte() {
+    let (dir, q) = rbitcoin_query::testutil::tiny_query_labeled("q-sh-shard-off-resume");
+    q.enter_direct_index_mode().unwrap();
+    seed_direct_chain(&q, 2);
+    q.finalize_sh_runs().unwrap();
+    assert!(q.sh_is_tip_ready());
+    {
+        let body = &q.store.scripthash.bodies[0];
+        let mut state = q.store.scripthash.allocs[0].lock().unwrap();
+        state.bump = body.logical_len() + 64;
+        rbitcoin_store::scripthash::write_alloc_header(body, &state).unwrap();
+    }
+    rbitcoin_store::scripthash::mark_sh_rebuild_resume(&dir).unwrap();
+    assert!(q.store.scripthash.shard_offset_past_file().unwrap());
+    q.finalize_sh_runs().unwrap();
+    assert!(
+        !q.store.scripthash.shard_offset_past_file().unwrap(),
+        "the resume byte kept a torn bump through finalize"
+    );
+    assert!(!rbitcoin_store::scripthash::sh_rebuild_marked(&dir));
+    assert!(q.sh_is_tip_ready());
+    let n = q.store.scripthash.entry_count();
+    q.finalize_sh_runs().unwrap();
+    assert_eq!(q.store.scripthash.entry_count(), n);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn finalize_sh_runs_empty_head_leftover_seal_is_wiped() {
     let (dir, q) = rbitcoin_query::testutil::tiny_query_labeled("q-sh-stale");
