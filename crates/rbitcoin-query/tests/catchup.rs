@@ -2286,8 +2286,10 @@ fn open_keeps_the_keys_floor_when_only_the_posts_marker_is_past_the_cut() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Same cut, with every shard already packed and no inclusion watermark.
-/// Open has to keep `DONE.keys`, or the resume publishes the cut.
+/// Same cut, with every shard already packed, no inclusion watermark, and
+/// resume byte 2. Open keeps `DONE.keys`. Finalize publishes that keys
+/// count before the tail backfill. Without the byte, discard wipes the
+/// head and a later history check still passes.
 #[test]
 fn open_keeps_the_keys_floor_on_a_packed_resume() {
     let dir = rbitcoin_store::testutil::TempDir::labeled("q-sh-keys-floor-resume").unwrap();
@@ -2325,16 +2327,40 @@ fn open_keeps_the_keys_floor_on_a_packed_resume() {
     }
     assert!(q.store.scripthash.unsealed_main_shards().is_empty());
     assert_eq!(q.store.scripthash.include_hwm(), 0);
+    let base = rbitcoin_store::scripthash::sorted_main_shard_path(q.store.path(), 0, n_shards);
+    let mphf = rbitcoin_store::scripthash_mphf::mphf_path(&base);
+    let mphf_before = std::fs::read(&mphf).unwrap();
     cut_creates_to(&q, gap);
     let path = dir.path().to_path_buf();
     drop(q);
+    rbitcoin_store::scripthash::mark_sh_rebuild_resume(&path).unwrap();
     let q = reopen_layout(&path, n_shards);
     assert!(
         udir.join(rbitcoin_store::scripthash_materialize::KEYS_DONE_NAME)
             .is_file(),
         "open dropped DONE.keys while it was still inside the cut"
     );
-    q.finalize_sh_runs().unwrap();
+    FLOOR_BEFORE_CLEAR.with(|c| c.set((0, false)));
+    rbitcoin_store::scripthash_materialize::set_before_unsorted_clear_for_test(Some(
+        snap_floor_before_unsorted_clear,
+    ));
+    let result = q.finalize_sh_runs();
+    rbitcoin_store::scripthash_materialize::set_before_unsorted_clear_for_test(None);
+    result.unwrap();
+    let (hwm, done) = FLOOR_BEFORE_CLEAR.with(|c| c.get());
+    assert!(
+        done,
+        "DONE.keys was already gone when the resume floor was stored"
+    );
+    assert_eq!(
+        hwm, keys,
+        "the resume published {hwm}, not the keys pass {keys}"
+    );
+    assert_eq!(
+        std::fs::read(&mphf).unwrap_or_default(),
+        mphf_before,
+        "finalize replaced the packed extract"
+    );
     let hist = q
         .scripthash_history(&rbitcoin_store::script_hash(&once))
         .unwrap();
