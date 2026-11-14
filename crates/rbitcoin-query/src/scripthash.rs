@@ -1438,6 +1438,22 @@ impl Query {
         Ok(())
     }
 
+    /// `member` is the cheap test. A lost-tail span is read only after that
+    /// test already hit. True when the posting is in the set and the span
+    /// did not cut it.
+    fn span_keeps_member(
+        &self,
+        scripthash: &[u8; 32],
+        fk: Fk,
+        suspect: &[(u64, u64)],
+        member: bool,
+    ) -> Result<bool, QueryError> {
+        if !member {
+            return Ok(false);
+        }
+        Ok(!self.reused_cut_fk(scripthash, fk, suspect)?)
+    }
+
     /// A create number inside a lost-tail span whose current transaction
     /// does not pay `scripthash`. Outside every span this is false and does
     /// not read Class A.
@@ -2099,7 +2115,8 @@ impl Query {
     /// Confirmed txs in `height` that create or spend a posting-list out for `scripthash`.
     ///
     /// Intersects the SH posting list with the block's tx fks and input
-    /// `create_fk`s. Does not expand packed `txout`.
+    /// `create_fk`s. A lost-tail span is read only for a posting that meets
+    /// that set. Does not expand packed `txout`.
     pub fn scripthash_tx_fks_at_height(
         &self,
         scripthash: &[u8; 32],
@@ -2112,9 +2129,6 @@ impl Query {
             .into_iter()
             .chain(self.pending_sh_create_fks(scripthash))
         {
-            if self.reused_cut_fk(scripthash, fk, &suspect)? {
-                continue;
-            }
             if let Some(id) = fk.get() {
                 posting.push(id);
             }
@@ -2127,20 +2141,19 @@ impl Query {
         let block_fks = self.block_tx_fks(height)?;
         let mut out = Vec::new();
         for fk in &block_fks {
-            let mut hit = false;
-            if let Some(id) = fk.get() {
-                if posting.binary_search(&id).is_ok() {
-                    hit = true;
-                }
-            }
+            let member = fk
+                .get()
+                .is_some_and(|id| posting.binary_search(&id).is_ok());
+            let mut hit = self.span_keeps_member(scripthash, *fk, &suspect, member)?;
             if !hit {
                 let prevs = self.tx_prevouts_for_fk(*fk)?;
                 for (create_fk, _) in prevs {
-                    if let Some(id) = create_fk.get() {
-                        if posting.binary_search(&id).is_ok() {
-                            hit = true;
-                            break;
-                        }
+                    let member = create_fk
+                        .get()
+                        .is_some_and(|id| posting.binary_search(&id).is_ok());
+                    if self.span_keeps_member(scripthash, create_fk, &suspect, member)? {
+                        hit = true;
+                        break;
                     }
                 }
             }
@@ -2210,6 +2223,8 @@ impl Query {
     }
 
     /// [`Self::scripthash_touched_at_height`] against a prebuilt [`BlockTouch`].
+    ///
+    /// A lost-tail span is read only for a posting this touch set already names.
     pub fn scripthash_touched_by(
         &self,
         scripthash: &[u8; 32],
@@ -2224,13 +2239,9 @@ impl Query {
             .iter()
             .chain(self.pending_sh_create_fks(scripthash).iter())
         {
-            if self.reused_cut_fk(scripthash, *fk, &suspect)? {
-                continue;
-            }
-            if let Some(id) = fk.get() {
-                if touch.ids.contains(&id) {
-                    return Ok(true);
-                }
+            let member = fk.get().is_some_and(|id| touch.ids.contains(&id));
+            if self.span_keeps_member(scripthash, *fk, &suspect, member)? {
+                return Ok(true);
             }
         }
         Ok(false)
