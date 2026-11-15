@@ -872,6 +872,45 @@ fn torn_prune_short_witness_body_fills_from_the_covered_row() {
     assert_eq!(t.seqsigwit.count(), 4);
 }
 
+thread_local! {
+    static GAP_BEFORE_ROWS: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+fn snap_gap_before_rows(dir: &std::path::Path) {
+    let bytes = std::fs::read(dir.join("seqsigwit.gap")).unwrap_or_default();
+    GAP_BEFORE_ROWS.with(|c| c.set(bytes));
+}
+
+/// The gap file has to name the empty rows before those bytes replace the
+/// witness. A crash after the replace and before the file reads the padding
+/// as a witness and rewinds the tip.
+#[test]
+fn witness_gap_is_durable_before_the_rows_are_replaced() {
+    let dir = super::tempfile_dir("witness-gap-before-rows");
+    let t = TxTable::create_tiny(&dir).unwrap();
+    t.put_full_batch_indexed(&[one(1)], false).unwrap();
+    let seq_end = on_disk_hwm(&t.seqsigwit.body);
+    t.put_full_batch_indexed(&[one(2), one(3)], false).unwrap();
+    t.flush().unwrap();
+    t.seqsigwit_loc.truncate_to_count(2).unwrap();
+    set_disk_hwm(&t.seqsigwit.body, seq_end);
+    drop(t);
+    std::fs::write(dir.join("seqsigwit.prune"), []).unwrap();
+    GAP_BEFORE_ROWS.with(|c| c.set(Vec::new()));
+    rbitcoin_store::tx_table::set_before_witness_gap_bytes_for_test(Some(snap_gap_before_rows));
+    let opened = TxTable::open_tiny(&dir);
+    rbitcoin_store::tx_table::set_before_witness_gap_bytes_for_test(None);
+    let t = opened.unwrap();
+    let gap = GAP_BEFORE_ROWS.with(|c| c.take());
+    assert!(
+        gap.len() >= 16 && gap.len().is_multiple_of(16),
+        "the witness rows were replaced before seqsigwit.gap was durable"
+    );
+    assert_eq!(t.count(), 3);
+    assert!(t.witness_row_is_gap(2));
+    assert!(t.witness_row_is_gap(3));
+}
+
 /// A torn marker and a witness body that covers no row cannot be filled.
 /// Open refuses instead of leaving a store whose next append fails.
 #[test]

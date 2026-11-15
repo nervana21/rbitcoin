@@ -46,7 +46,8 @@ Fixed
   a node that cannot seal the next block. A 4-byte height is prune mode. A positive short locator on that
   height is the prefix that landed, so open drops the creates past it.
   Locator 0 is the finished cut and does not drop the chain. A stem cut in this process is that same finished cut: a body header that still names every create still seals the tip. The empty rows are still not a witness
-  after a restart, and the tip stays. Deleting a gap span syncs the store
+  after a restart, and the tip stays. The gap file is synced before those
+  empty rows replace the witness. Deleting a gap span syncs the store
   directory.
   A later torn locator is its own span, so a witness stored between the
   two fills stays available. A witness locator ahead of the covered create

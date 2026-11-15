@@ -1199,13 +1199,17 @@ fn fill_witness_gap(
     };
     let lens = prep.aligned_lens();
     let staged = loc.stage(&prep.starts, &lens)?;
-    crate::var_table::write_prepared_bodies_one_wave(&[(seqsigwit, &prep)], false)?;
-    loc.write_staged(&staged)?;
     // The locator header is what the next open counts. Record the gap
-    // first, or that open reads these empty rows as a witness and drops
-    // the tip.
+    // before these bytes land, or that open reads the padding as a witness
+    // and drops the tip.
     let spans = merge_witness_gap(&load_witness_gap(gap_dir)?, fill_from, through);
     store_witness_gap(gap_dir, &spans)?;
+    #[cfg(debug_assertions)]
+    if let Some(hook) = before_witness_gap_bytes_hook() {
+        hook(gap_dir);
+    }
+    crate::var_table::write_prepared_bodies_one_wave(&[(seqsigwit, &prep)], false)?;
+    loc.write_staged(&staged)?;
     let (_fks, durable) = publish_prepared_body(seqsigwit, prep, true)?;
     let _ = loc.commit_staged(staged, durable);
     Ok(loc.count() == through && seqsigwit.count() == through)
@@ -1354,6 +1358,24 @@ fn spend_recheck_before_truncate_hook() -> Option<fn(u64)> {
 #[doc(hidden)]
 pub fn set_spend_recheck_before_truncate_for_test(hook: Option<fn(u64)>) {
     SPEND_RECHECK_BEFORE_TRUNCATE.with(|cell| cell.set(hook));
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static BEFORE_WITNESS_GAP_BYTES: std::cell::Cell<Option<fn(&Path)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(debug_assertions)]
+fn before_witness_gap_bytes_hook() -> Option<fn(&Path)> {
+    BEFORE_WITNESS_GAP_BYTES.with(|cell| cell.take())
+}
+
+/// One-shot hook immediately before the empty witness rows replace the body.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn set_before_witness_gap_bytes_for_test(hook: Option<fn(&Path)>) {
+    BEFORE_WITNESS_GAP_BYTES.with(|cell| cell.set(hook));
 }
 
 fn file_header_behind(file: &crate::file::TableFile) -> bool {
