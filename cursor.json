@@ -1,14 +1,14 @@
 {
   "new_base": "8e62e4ce4d60c30abc851cb0893e4b80149ac9e4",
   "new_skip": 2286,
-  "old_index": 5716,
-  "old_name": "crates/rbitcoin-ibd/src/ibd/state.rs:338:5: replace enqueue_header_cmd with ()",
+  "old_index": 7219,
+  "old_name": "crates/rbitcoin-mempool/src/store.rs:152:9: replace Mempool::open_or_create -> Result<Self, MempoolError> with Ok(Default::default())",
   "new_cap_used": true,
   "run_id": "43689183118",
   "new_len": 9377,
   "new_remaining": 7091,
   "old_len": 27655,
-  "old_remaining": 27366,
-  "completed_new": 393,
-  "completed_old": 289
+  "old_remaining": 26152,
+  "completed_new": 0,
+  "completed_old": 1503
 }
