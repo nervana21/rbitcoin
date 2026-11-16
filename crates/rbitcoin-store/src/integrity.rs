@@ -880,6 +880,9 @@ impl Store {
 /// Sidecar in the hot store: the create count an unfinished pad must reach.
 pub const CLASS_A_PAD_NAME: &str = "class_a.pad";
 
+/// Script opcode for an unspendable output.
+const OP_RETURN: u8 = 106;
+
 /// Pad target left by a crash during [`Store::drop_confirmed_past_creates`].
 pub(crate) fn read_pad_target(dir: &std::path::Path) -> Result<u64, StoreError> {
     let path = dir.join(CLASS_A_PAD_NAME);
@@ -903,7 +906,7 @@ fn tombstone_create(
     Vec<crate::tx_table::InputRecord>,
     Vec<crate::tx_table::OutputRecord>,
 ) {
-    let mut txid = [0xffu8; 32];
+    let mut txid = [u8::MAX; 32];
     txid[24..].copy_from_slice(&id.to_le_bytes());
     (
         crate::tx_table::TxRecord {
@@ -914,6 +917,6 @@ fn tombstone_create(
             output_count: 1,
         },
         vec![crate::tx_table::InputRecord::coinbase(0, vec![], vec![])],
-        vec![crate::tx_table::OutputRecord::unspent(0, vec![0x6a])],
+        vec![crate::tx_table::OutputRecord::unspent(0, vec![OP_RETURN])],
     )
 }
