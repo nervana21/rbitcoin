@@ -14,6 +14,7 @@ pub mod collateral;
 pub mod crypto;
 pub mod error;
 pub mod hook;
+pub mod challenge;
 pub mod output;
 pub mod settlement;
 
@@ -26,3 +27,4 @@ pub use error::{Error, Result};
 pub use hook::{ConsensusHook, NullConsensusHook};
 pub use output::OutputKind;
 pub use settlement::{SettlementPolicy, StakeOutcome, ValueDestination};
+pub use challenge::{SpendPath, PathAdmission, CreateChallenge, ChallengeSchedule, ChallengeUtxo, Phase};
