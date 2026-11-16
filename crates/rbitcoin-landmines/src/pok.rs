@@ -1,6 +1,7 @@
 //! Pre-qday proof-of-knowledge commit/reveal.
 
 use bitcoin::OutPoint;
+use bitcoin_hashes::{sha256, Hash};
 
 use crate::crypto::QuantumSafePubKey;
 
@@ -13,7 +14,7 @@ pub struct PokCommitment(pub [u8; 32]);
 pub struct PokReveal {
     /// Vulnerable outpoint this proof covers.
     pub vulnerable: OutPoint,
-    /// Quantum-safe key the challenge must pay to on successful claim.
+    /// Quantum-safe key the challenge must pay to on successful reclaim.
     pub recovery_key: QuantumSafePubKey,
     /// Secret preimage (real scheme TBD; stub hashes this).
     pub proof: Vec<u8>,
@@ -32,12 +33,23 @@ pub trait PreQdayPok {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StubPok;
 
+impl StubPok {
+    fn digest(reveal: &PokReveal) -> [u8; 32] {
+        let mut data = Vec::with_capacity(36 + 32 + reveal.proof.len());
+        data.extend_from_slice(reveal.vulnerable.txid.as_byte_array());
+        data.extend_from_slice(&reveal.vulnerable.vout.to_le_bytes());
+        data.extend_from_slice(&reveal.recovery_key.0);
+        data.extend_from_slice(&reveal.proof);
+        sha256::Hash::hash(&data).to_byte_array()
+    }
+}
+
 impl PreQdayPok for StubPok {
-    fn commit(&self, _reveal: &PokReveal) -> PokCommitment {
-        PokCommitment([0u8; 32])
+    fn commit(&self, reveal: &PokReveal) -> PokCommitment {
+        PokCommitment(Self::digest(reveal))
     }
 
-    fn verify(&self, _commitment: &PokCommitment, _reveal: &PokReveal) -> bool {
-        false
+    fn verify(&self, commitment: &PokCommitment, reveal: &PokReveal) -> bool {
+        commitment.0 == Self::digest(reveal)
     }
 }

@@ -2,10 +2,10 @@
 
 use bitcoin::{Amount, OutPoint};
 
+use crate::challenge::{ChallengeUtxo, PathAdmission, Phase, SpendPath};
 use crate::clock::ActivationClock;
 use crate::crypto::QuantumSafePubKey;
 use crate::error::{Error, Result};
-use crate::challenge::{ChallengeUtxo, Phase};
 use crate::output::OutputKind;
 use crate::pok::{PokCommitment, PokReveal, PreQdayPok};
 
@@ -29,7 +29,7 @@ pub struct LandmineReclaim {
     pub payout_key: QuantumSafePubKey,
     /// Full challenge lock (vulnerable + collateral).
     pub total: Amount,
-    /// Phase that allowed the claim.
+    /// Phase that allowed the path.
     pub phase: Phase,
 }
 
@@ -52,13 +52,28 @@ pub fn fund_landmine<P: PreQdayPok>(
     })
 }
 
-/// Reclaim challenge with a landmine reveal (Alice takes attacker collateral).
+/// Reclaim a challenge with a landmine reveal (Alice takes attacker collateral).
 pub fn reclaim_with_landmine<P: PreQdayPok>(
-    _clock: &impl ActivationClock,
-    _pok: &P,
-    _mine: &Landmine,
-    _limbo: &ChallengeUtxo,
-    _reveal: &PokReveal,
+    clock: &impl ActivationClock,
+    pok: &P,
+    mine: &Landmine,
+    challenge: &ChallengeUtxo,
+    reveal: &PokReveal,
 ) -> Result<LandmineReclaim> {
-    Err(Error::Unimplemented("landmine reclaim"))
+    if !pok.verify(&mine.commitment, reveal) {
+        return Err(Error::InvalidPok);
+    }
+    if reveal.vulnerable != challenge.vulnerable_id {
+        return Err(Error::VulnerableMismatch);
+    }
+    match challenge.admit_path(clock, &SpendPath::PokReclaim)? {
+        PathAdmission::PathAllowed { phase } => Ok(LandmineReclaim {
+            payout_key: reveal.recovery_key.clone(),
+            total: challenge.total_locked()?,
+            phase,
+        }),
+        PathAdmission::TimeoutSpend { .. } => {
+            Err(Error::Unimplemented("landmine produced timeout spend"))
+        }
+    }
 }
