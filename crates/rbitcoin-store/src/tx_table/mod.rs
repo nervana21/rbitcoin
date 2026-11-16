@@ -687,6 +687,9 @@ pub struct TxTable {
     pub datadir_hdd: std::sync::atomic::AtomicBool,
     /// Historical spend slots not yet folded into `spent.body`.
     spend_pages: crate::spend_page_log::SpendPageLog,
+    /// A Class A `sync_data` failed. The kernel may have dropped those dirty
+    /// pages, so a retry that succeeds proves nothing; refuse until restart.
+    class_a_sync_failed: std::sync::atomic::AtomicBool,
     /// Per-fk packed `txout` decodes for an outs reader
     /// ([`Self::get_meta_and_outputs`], and [`Self::get`] through it), the
     /// decode the mempool and block-proposal pins count. [`Self::get_full`] is
@@ -1251,6 +1254,7 @@ impl TxTable {
             prune_seqsigwit_mode: std::sync::atomic::AtomicBool::new(false),
             datadir_hdd: std::sync::atomic::AtomicBool::new(false),
             spend_pages: crate::spend_page_log::SpendPageLog::create(dir),
+            class_a_sync_failed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1489,6 +1493,7 @@ impl TxTable {
             prune_seqsigwit_mode: std::sync::atomic::AtomicBool::new(prune_seqsigwit_mode),
             datadir_hdd: std::sync::atomic::AtomicBool::new(false),
             spend_pages: crate::spend_page_log::SpendPageLog::load_clipped(dir, spent_body_end)?,
+            class_a_sync_failed: std::sync::atomic::AtomicBool::new(false),
         };
         match input_open_tail(t.input.count(), n_bodies, t.seqsigwit.count()) {
             InputOpenTail::Backfill { from } => {
@@ -3911,7 +3916,24 @@ impl TxTable {
     /// locator families, `txid.body`, `txstat`, and `input`. Not `tx.head`.
     /// Does not publish high-water marks; headers already written are in
     /// the file and land with it.
+    ///
+    /// A failure latches: every later call refuses until restart.
     pub fn sync_class_a_data(&self) -> Result<(), StoreError> {
+        use std::sync::atomic::Ordering;
+        if self.class_a_sync_failed.load(Ordering::Acquire) {
+            return Err(StoreError::io(
+                self.body.body.path(),
+                std::io::Error::other("an earlier Class A sync failed; restart the node"),
+            ));
+        }
+        let synced = self.sync_class_a_stems();
+        if synced.is_err() {
+            self.class_a_sync_failed.store(true, Ordering::Release);
+        }
+        synced
+    }
+
+    fn sync_class_a_stems(&self) -> Result<(), StoreError> {
         self.body.sync_data_only()?;
         self.seqsigwit.sync_data_only()?;
         self.spent.sync_data_only()?;

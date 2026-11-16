@@ -1246,47 +1246,57 @@ fn failed_read_in_tip_window_shrinks_nothing_but_a_torn_record_does() {
 ///
 /// A failed `sync_data` on any of them fails the barrier, and the on-disk
 /// tip stays where it was. Power loss then cannot leave `confirmed[]` or a
-/// `header_txs` range naming creates that never reached the device.
+/// `header_txs` range naming creates that never reached the device. The
+/// failure latches: a retried fsync can succeed after the kernel dropped
+/// the dirty pages, so every later barrier refuses until a restart.
 #[test]
 fn class_a_sync_failure_stops_the_class_c_commit() {
-    let dir = tmp();
-    let s = Store::create_tiny(&dir).unwrap();
-    let write = rbitcoin_store::ClassCWrite::for_test();
-    let (genesis, parent) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
-    s.flush_class_c_tip().unwrap();
-    let sealed = on_disk_hwm(&dir.join("confirmed.body"));
-    connect_coinbase(&s, &write, 1, genesis, parent);
-    let txs = &s.txs;
-    let class_a = [
-        ("txout.body", txs.body.body.io_handle()),
-        ("seqsigwit.body", txs.seqsigwit.body.io_handle()),
-        ("spent.body", txs.spent.body.io_handle()),
-        ("create.loc", txs.create_loc.loc.io_handle()),
-        ("create.loc.ovf", txs.create_loc.ovf.io_handle()),
-        ("create.off", txs.create_loc.off.io_handle()),
-        ("seqsigwit.loc", txs.seqsigwit_loc.loc.io_handle()),
-        ("seqsigwit.loc.ovf", txs.seqsigwit_loc.ovf.io_handle()),
-        ("seqsigwit.off", txs.seqsigwit_loc.off.io_handle()),
-        ("txid.body", txs.txids.file.io_handle()),
-        ("txstat.body", txs.txstat.body.io_handle()),
-        ("input.loc", txs.input.loc.io_handle()),
-        ("input.off", txs.input.off.io_handle()),
-        ("input.body", txs.input.body.io_handle()),
+    type Pick = fn(&Store) -> rbitcoin_store::io_handle::IoHandle;
+    let class_a: [(&str, Pick); 16] = [
+        ("txout.body", |s| s.txs.body.body.io_handle()),
+        ("seqsigwit.body", |s| s.txs.seqsigwit.body.io_handle()),
+        ("spent.body", |s| s.txs.spent.body.io_handle()),
+        ("create.loc", |s| s.txs.create_loc.loc.io_handle()),
+        ("create.loc.ovf", |s| s.txs.create_loc.ovf.io_handle()),
+        ("create.off", |s| s.txs.create_loc.off.io_handle()),
+        ("seqsigwit.loc", |s| s.txs.seqsigwit_loc.loc.io_handle()),
+        ("seqsigwit.loc.ovf", |s| s.txs.seqsigwit_loc.ovf.io_handle()),
+        ("seqsigwit.off", |s| s.txs.seqsigwit_loc.off.io_handle()),
+        ("txid.body", |s| s.txs.txids.file.io_handle()),
+        ("txstat.body", |s| s.txs.txstat.body.io_handle()),
+        ("txstat.ovf", |s| s.txs.txstat.ovf.io_handle()),
+        ("txstat.blk", |s| s.txs.txstat.blk.io_handle()),
+        ("input.loc", |s| s.txs.input.loc.io_handle()),
+        ("input.off", |s| s.txs.input.off.io_handle()),
+        ("input.body", |s| s.txs.input.body.io_handle()),
     ];
-    for (name, handle) in class_a {
-        rbitcoin_store::io_handle::arm_fail_sync(handle, 1);
+    for (name, pick) in class_a {
+        let dir = tmp();
+        let s = Store::create_tiny(&dir).unwrap();
+        let write = rbitcoin_store::ClassCWrite::for_test();
+        let (genesis, parent) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+        s.flush_class_c_tip().unwrap();
+        let sealed = on_disk_hwm(&dir.join("confirmed.body"));
+        connect_coinbase(&s, &write, 1, genesis, parent);
+        rbitcoin_store::io_handle::arm_fail_sync(pick(&s), 1);
         assert!(
             s.flush_class_c_tip().is_err(),
             "{name}: the barrier committed without syncing it"
+        );
+        assert!(
+            s.flush_class_c_tip().is_err(),
+            "{name}: a retried barrier committed over a failed sync"
         );
         assert_eq!(
             on_disk_hwm(&dir.join("confirmed.body")),
             sealed,
             "{name}: confirmed[] reached disk ahead of Class A"
         );
+        drop(s);
+        let s = Store::open_tiny(&dir).unwrap();
+        assert_eq!(s.confirmed.tip_height(), Some(Height(0)), "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
-    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn store_image(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
@@ -1320,7 +1330,7 @@ fn write_image(dir: &std::path::Path, image: &std::collections::BTreeMap<PathBuf
 /// Height 0 is sealed. The next block's archive is written with no barrier.
 /// Each archive file then keeps either every write since the seal or none of
 /// them. Every single dropped file, and every single kept file, is one
-/// image. Each reopens at the sealed tip with the sealed creates, and
+/// image. A file can also keep its header page and lose the rows behind it. Each reopens at the sealed tip with the sealed creates, and
 /// the next block connects and seals on top of it. `tx.head` keeps what it
 /// wrote: its `meta` is synced on insert and open repairs a head that leads.
 #[test]
@@ -1347,15 +1357,37 @@ fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
     assert!(changed.len() >= 8, "archive files written: {changed:?}");
     let n = changed.len();
     let all = (1u32 << n) - 1;
-    let mut masks = vec![0, all];
-    for bit in 0..n {
-        masks.extend([1u32 << bit, all & !(1u32 << bit)]);
+    // (dropped files, file whose header page landed without its new rows)
+    let mut cases = vec![(0, None), (all, None)];
+    for (bit, rel) in changed.iter().enumerate() {
+        cases.extend([(1u32 << bit, None), (all & !(1u32 << bit), None)]);
+        // A locator header that lands without its rows still refuses open
+        // ("overflow missing"): a zeroed row reads as an overflow escape.
+        // Telling that tail from a real row needs the sealed create count
+        // at locator open. Not covered here.
+        if ["create.loc", "seqsigwit.loc"].contains(&rel.to_str().unwrap_or("")) {
+            continue;
+        }
+        cases.extend([(0, Some(bit)), (all & !(1u32 << bit), Some(bit))]);
     }
+    let header = rbitcoin_store::file::FILE_HEADER_LEN;
     let img = tmp();
-    for mask in masks {
+    for (mask, header_only) in cases {
         let mut image = torn.clone();
         let mut dropped = Vec::new();
         for (bit, rel) in changed.iter().enumerate() {
+            if header_only == Some(bit) {
+                dropped.push(format!("{} rows", rel.display()));
+                let new = &torn[*rel];
+                let old = sealed.get(*rel).cloned().unwrap_or_default();
+                let mut bytes = vec![0u8; new.len()];
+                let keep = old.len().min(new.len());
+                bytes[..keep].copy_from_slice(&old[..keep]);
+                let head = header.min(new.len());
+                bytes[..head].copy_from_slice(&new[..head]);
+                image.insert((*rel).clone(), bytes);
+                continue;
+            }
             if mask & (1 << bit) == 0 {
                 continue;
             }

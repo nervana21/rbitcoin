@@ -466,7 +466,8 @@ fn finalize_chases_a_create_that_lands_after_the_ready_sample() {
 }
 
 /// The tail backfill syncs the Class A creates it scans before
-/// `include_hwm` names them. A failed sync leaves the watermark where it was.
+/// `include_hwm` names them. A failed sync leaves the watermark where it was
+/// (and latches until restart).
 #[test]
 fn backfill_syncs_the_scanned_creates_before_the_watermark() {
     let (dir, q) = rbitcoin_query::testutil::tiny_query_labeled("q-sh-backfill-sync");
@@ -483,7 +484,5 @@ fn backfill_syncs_the_scanned_creates_before_the_watermark() {
         "the backfill published creates whose archive did not sync"
     );
     assert_eq!(q.store.scripthash.include_hwm(), before);
-    q.backfill_sh_creates_from_class_a().expect("backfill");
-    assert!(q.sh_is_tip_ready());
     let _ = std::fs::remove_dir_all(&dir);
 }

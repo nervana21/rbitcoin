@@ -310,9 +310,9 @@ fn clean_replay_does_not_publish_the_marker_before_the_barrier() {
     );
     drop(arm);
 
-    s.sync_spend_durable(0).unwrap();
-    let m = SpendDurable::load(s.path()).unwrap().unwrap();
-    assert_eq!((m.annotated_through(), m.durable_through()), (0, 0));
+    // The failed Class A sync latched: a retry that succeeds proves nothing.
+    assert!(s.sync_spend_durable(0).is_err());
+    assert_eq!(std::fs::read(&marker).unwrap(), before);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

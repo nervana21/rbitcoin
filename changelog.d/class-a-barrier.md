@@ -12,7 +12,9 @@ Fixed
   short of its locator refused startup ("body header short of locator").
   No committed row can name that tail any more, so open keeps the creates
   every body header still covers. A short `input.body` header cuts the
-  input locator the same way.
+  input locator the same way, and an input locator past that prefix is cut.
+  A failed archive sync now latches until restart, so a retried fsync
+  cannot commit over pages the kernel dropped.
 - **An interrupted `tx.head` rebuild rebuilds again.** Segment files with
   no `tx.head/meta` refused startup as a legacy layout and needed a manual
   delete. Open now wipes that directory and rebuilds it from the archive.

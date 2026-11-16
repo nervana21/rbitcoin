@@ -4088,6 +4088,9 @@ fn collect_syncs_the_scanned_creates_first() {
     assert!(!udir
         .join(rbitcoin_store::scripthash_materialize::KEYS_DONE_NAME)
         .exists());
+    // The failed sync latched; a restart clears it.
+    drop(s);
+    let s = rbitcoin_store::Store::open_tiny(&dir).unwrap();
     collect_unsorted_covering_txs(&s.txs, &table, &udir, n_shards, 1, false, None).unwrap();
     seal_mphf_from_keys(&table, &udir, n_shards, None).unwrap();
     rbitcoin_store::io_handle::arm_fail_sync(s.txs.txids.file.io_handle(), 1);

@@ -2443,8 +2443,8 @@ impl Store {
 
     /// Process-exit flush (IBD / SIGTERM). Target: seconds, not minutes.
     ///
-    /// 1. Fsync tip / Class C tables only.
-    /// 2. MS_ASYNC Class A bodies.
+    /// 1. The connect barrier: Class A `sync_data`, then the Class C tables.
+    /// 2. MS_ASYNC Class A bodies and the derived heads.
     pub fn flush_for_shutdown(&self) -> Result<(), StoreError> {
         let t0 = std::time::Instant::now();
         rbitcoin_log::info!("store: shutdown flush — fsync tip tables…");
