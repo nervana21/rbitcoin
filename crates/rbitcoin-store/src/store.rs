@@ -896,6 +896,8 @@ impl Store {
     /// fsyncing every mega-batch of txs/ins/outs.
     ///
     pub fn flush_header_archive(&self) -> Result<(), StoreError> {
+        // A durable body association must name durable creates.
+        self.txs.sync_class_a_data()?;
         self.headers.flush()?;
         self.header_txs.flush()?;
         Ok(())
@@ -1866,12 +1868,16 @@ impl Store {
 
     /// Flush Class C **except** `confirmed[]` (pre-tip half of the barrier).
     ///
-    /// Order: `strong_tx` → `header_txs`. Used so a mid-barrier kill can leave
-    /// strong durable **above** tip (repairable) without advancing tip. Prefer
-    /// [`Self::flush_class_c_tip`] for the full barrier.
+    /// Order: Class A `sync_data` → `strong_tx` → `header_txs`. Used so a
+    /// mid-barrier kill can leave strong durable **above** tip (repairable)
+    /// without advancing tip. Prefer [`Self::flush_class_c_tip`] for the full
+    /// barrier.
     #[doc(hidden)]
     pub fn flush_class_c_pre_tip(&self) -> Result<(), StoreError> {
         // Tip-as-commit: never flush confirmed here.
+        // Class A first: no Class C row on disk names a create the device
+        // does not hold, so open may truncate any Class A tail it finds.
+        self.txs.sync_class_a_data()?;
         // Headers first so conf tip cannot reference a non-durable header_fk.
         self.headers.flush()?;
         self.strong_tx.flush()?;
@@ -1911,7 +1917,7 @@ impl Store {
             .load(std::sync::atomic::Ordering::Acquire);
         self.spenders.sync_data_only()?;
         self.publish_open_spend_pages(tip, |meta| self.spend_slot_still_live(meta))?;
-        self.txs.sync_replay_data()?;
+        self.txs.sync_class_a_data()?;
         self.store_spend_marker(tip, tip, gen)?;
         self.fold_sealed_spend_pages()?;
         Ok(t.elapsed().as_nanos() as u64)
@@ -2300,7 +2306,7 @@ impl Store {
         use std::sync::atomic::Ordering;
         self.spenders.sync_data_only()?;
         self.publish_open_spend_pages(height, |meta| self.spend_slot_still_live(meta))?;
-        self.txs.sync_replay_data()?;
+        self.txs.sync_class_a_data()?;
         during_sync(self);
         if self.spend_reorg_gen.load(Ordering::Acquire) != gen {
             return Ok(());

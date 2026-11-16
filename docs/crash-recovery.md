@@ -15,7 +15,7 @@ Best-chain views ignore uncommitted Class C state:
 | 0. Structural spentness / maturity / subsidy | No durable tip write yet |
 | 1. `strong_tx` (L2 RAM) | May lead tip after kill **before** barrier |
 | 2. Height-fence extend (RAM), then `confirmed[]` tip advance (L2 RAM) | In-process commit |
-| 3. **`flush_class_c_tip`** (headers, then `strong_tx`, `header_txs`, `confirmed[]` last) | **Durability barrier**. IBD runs it on `rbtc-tip-flush` ([Flush](#flush)) |
+| 3. **`flush_class_c_tip`** (Class A `sync_data`, then headers, `strong_tx`, `header_txs`, `confirmed[]` last) | **Durability barrier**. IBD runs it on `rbtc-tip-flush` ([Flush](#flush)) |
 | 3b. Scripthash write-behind enqueue | After tip. Direct IBD defers SH until tip entry |
 | 4. Body-queue dequeue for those heights | Only after confirm-write returns Ok. In IBD the barrier may still be running |
 | 5. Spend annotations (Direct) | After tip. A missing slot is unspent until open replays from the marker |
@@ -97,7 +97,7 @@ Clean shutdown: `flush_for_shutdown` fsyncs tip/Class C (incl. L2 dirty images) 
 Steady path: payload pwrite + HWM publish; `sync_data` on flush barriers.
 Kill mid-payload before HWM publish: readers never see past previous published length.
 
-Connect barrier (`flush_class_c_tip`): headers (if dirty) → strong → header_txs → **confirmed last** → soft `tip_seal` (tmp + `sync_all` + rename + parent-directory `fsync`). The height fence is RAM-only and is not flushed. The barrier does not `sync_data` Class A.
+Connect barrier (`flush_class_c_tip`): Class A `sync_data` → headers (if dirty) → strong → header_txs → **confirmed last** → soft `tip_seal` (tmp + `sync_all` + rename + parent-directory `fsync`). The height fence is RAM-only and is not flushed. The Class A step is `TxTable::sync_class_a_data`: `txout`, `seqsigwit`, `spent`, both locator families (loc, overflow, checkpoint), `txid.body`, `txstat`, and `input`. Not `tx.head`. A failed sync fails the barrier before any Class C table is written. So no `confirmed[]`, strong bit, or `header_txs` range on disk names a create the device does not hold, and a Class A tail open finds past those rows is unpublished. `flush_header_archive` runs the same Class A step before its `header_txs` flush.
 
 IBD runs that barrier on one long-lived `rbtc-tip-flush` thread for the confirm engine, so the next write batch's Class A body append and checks overlap it. Header range puts and the other Class C stores wait until that flush is joined. A structural reject after the body append still stores those header ranges after the join, so a retry sees `header_txs` and does not append the body again. Class C still flushes once per batch. Every `tip_commit` taker joins it first: the next commit, a disconnect or rewind, `Query::flush`, `flush_for_shutdown`, and dropping the `Query`. The order on disk does not change. A kill can lose one more write batch than in Tip mode. Its body-queue rows are already gone (RAM only, fetched again), and its spend annotations and filter or tweak puts may sit above the durable tip: open replays annotations and trims both indexes to the tip. A failed IBD barrier is not retried, because a failed `fsync` may have dropped the dirty pages. Every later commit fails until restart, so IBD halts after its one engine-fault retry. Tip mode runs the barrier inline.
 Disconnect: confirmed truncate + `flush_confirmed_only` (also refreshes `tip_seal`) before unstrong/height clear. If the new tip is below `spend_durable`, that marker is lowered to the tip.

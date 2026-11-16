@@ -3877,11 +3877,16 @@ impl TxTable {
         Ok(())
     }
 
-    /// Device barrier for those bodies. Does not publish their high-water marks.
-    pub fn sync_replay_data(&self) -> Result<(), StoreError> {
+    /// Device barrier for every Class A stem a commit names: the bodies, both
+    /// locator families, `txid.body`, `txstat`, and `input`. Not `tx.head`.
+    /// Does not publish high-water marks; headers already written are in
+    /// the file and land with it.
+    pub fn sync_class_a_data(&self) -> Result<(), StoreError> {
         self.body.sync_data_only()?;
         self.seqsigwit.sync_data_only()?;
         self.spent.sync_data_only()?;
+        self.create_loc.sync_data_only()?;
+        self.seqsigwit_loc.sync_data_only()?;
         self.txids.sync_data_only()?;
         self.txstat.sync_data_only()?;
         self.input.sync_data_only()?;

@@ -1241,3 +1241,50 @@ fn failed_read_in_tip_window_shrinks_nothing_but_a_torn_record_does() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Every Class A file a commit names is device-synced before Class C.
+///
+/// A failed `sync_data` on any of them fails the barrier, and the on-disk
+/// tip stays where it was. Power loss then cannot leave `confirmed[]` or a
+/// `header_txs` range naming creates that never reached the device.
+#[test]
+fn class_a_sync_failure_stops_the_class_c_commit() {
+    let dir = tmp();
+    let s = Store::create_tiny(&dir).unwrap();
+    let write = rbitcoin_store::ClassCWrite::for_test();
+    let (genesis, parent) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    s.flush_class_c_tip().unwrap();
+    let sealed = on_disk_hwm(&dir.join("confirmed.body"));
+    connect_coinbase(&s, &write, 1, genesis, parent);
+    let txs = &s.txs;
+    let class_a = [
+        ("txout.body", txs.body.body.io_handle()),
+        ("seqsigwit.body", txs.seqsigwit.body.io_handle()),
+        ("spent.body", txs.spent.body.io_handle()),
+        ("create.loc", txs.create_loc.loc.io_handle()),
+        ("create.loc.ovf", txs.create_loc.ovf.io_handle()),
+        ("create.off", txs.create_loc.off.io_handle()),
+        ("seqsigwit.loc", txs.seqsigwit_loc.loc.io_handle()),
+        ("seqsigwit.loc.ovf", txs.seqsigwit_loc.ovf.io_handle()),
+        ("seqsigwit.off", txs.seqsigwit_loc.off.io_handle()),
+        ("txid.body", txs.txids.file.io_handle()),
+        ("txstat.body", txs.txstat.body.io_handle()),
+        ("input.loc", txs.input.loc.io_handle()),
+        ("input.off", txs.input.off.io_handle()),
+        ("input.body", txs.input.body.io_handle()),
+    ];
+    for (name, handle) in class_a {
+        rbitcoin_store::io_handle::arm_fail_sync(handle, 1);
+        assert!(
+            s.flush_class_c_tip().is_err(),
+            "{name}: the barrier committed without syncing it"
+        );
+        assert_eq!(
+            on_disk_hwm(&dir.join("confirmed.body")),
+            sealed,
+            "{name}: confirmed[] reached disk ahead of Class A"
+        );
+    }
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
+    let _ = std::fs::remove_dir_all(&dir);
+}

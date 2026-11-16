@@ -888,7 +888,7 @@ Schema 15 leftover `tx_height.body` is unlinked on open (logged).
 
 1. `strong_tx` (may lead tip after kill, before the barrier)
 2. Height-fence extend (RAM), then **`confirmed[]` tip advance** ← **commit**
-3. `flush_class_c_tip` (headers, then `strong_tx`, `header_txs`, `confirmed[]` last)
+3. `flush_class_c_tip` (Class A `sync_data`, then headers, `strong_tx`, `header_txs`, `confirmed[]` last)
 4. Scripthash write-behind enqueue (after tip). Direct IBD defers SH until tip entry
 
 `is_confirmed_strong(tx)` ⇔ strong ∧ fence contains the fk (implies height ≤ tip
