@@ -14,8 +14,10 @@ pub mod collateral;
 pub mod crypto;
 pub mod error;
 pub mod hook;
+pub mod landmine;
 pub mod challenge;
 pub mod output;
+pub mod pok;
 pub mod settlement;
 
 pub use bitcoin::{Amount, OutPoint};
@@ -26,5 +28,8 @@ pub use crypto::{InsecureStubCrypto, QuantumSafeCrypto, QuantumSafePubKey, Quant
 pub use error::{Error, Result};
 pub use hook::{ConsensusHook, NullConsensusHook};
 pub use output::OutputKind;
+pub use pok::{PokCommitment, PokReveal, PreQdayPok, StubPok};
 pub use settlement::{SettlementPolicy, StakeOutcome, ValueDestination};
 pub use challenge::{SpendPath, PathAdmission, CreateChallenge, ChallengeSchedule, ChallengeUtxo, Phase};
+
+pub use landmine::{fund_landmine, reclaim_with_landmine, Landmine, LandmineReclaim};

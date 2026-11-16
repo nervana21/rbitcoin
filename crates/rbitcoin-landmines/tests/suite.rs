@@ -1,1 +1,2 @@
+mod landmine;
 mod challenge;

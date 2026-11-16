@@ -34,6 +34,12 @@ pub enum Error {
         /// Phase this claim kind requires.
         required: Phase,
     },
+    /// Pre-qday action attempted after q-day.
+    PostQdayForbidden,
+    /// PoK reveal does not match landmine commitment.
+    InvalidPok,
+    /// Reveal covers a different vulnerable outpoint than this challenge.
+    VulnerableMismatch,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
