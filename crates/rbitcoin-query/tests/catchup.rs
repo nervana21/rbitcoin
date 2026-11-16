@@ -486,3 +486,26 @@ fn backfill_syncs_the_scanned_creates_before_the_watermark() {
     assert_eq!(q.store.scripthash.include_hwm(), before);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A rebuild mark wipes and recollects the index on the next finalize, then
+/// is dropped so the start after that keeps the head.
+#[test]
+fn rebuild_mark_recollects_then_clears() {
+    let (dir, q) = rbitcoin_query::testutil::tiny_query_labeled("q-sh-rebuild-mark");
+    seed_direct_chain(&q, 3);
+    let _ = q.finalize_sh_runs().unwrap();
+    assert!(q.sh_is_tip_ready());
+    rbitcoin_store::scripthash::mark_sh_rebuild(q.store.path()).unwrap();
+    assert!(q.sh_force_rebuild());
+    let _ = q.finalize_sh_runs().unwrap();
+    assert!(!rbitcoin_store::scripthash::sh_rebuild_marked(
+        q.store.path()
+    ));
+    assert!(!q.sh_force_rebuild());
+    assert!(q.sh_is_tip_ready());
+    assert!(
+        q.store.scripthash.entry_count() > 0,
+        "the rebuild recollected Class A"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

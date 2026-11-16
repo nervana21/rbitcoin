@@ -1098,7 +1098,20 @@ impl Query {
     }
 
     pub fn apply_sh_job(&self, job: ShPendingJob) -> Result<(), QueryError> {
-        let applied = self.apply_sh_job_inner(&job)?;
+        let applied = match self.apply_sh_job_inner(&job) {
+            Ok(applied) => applied,
+            // The single appender read a torn slab: it is on disk, not a
+            // reader racing an append. The next start rebuilds the index.
+            Err(e @ StoreError::Corrupt(_)) => {
+                rbitcoin_log::warn!(
+                    "node: scripthash apply at height {} hit {e} — full rebuild on next start",
+                    job.height.0
+                );
+                rbitcoin_store::scripthash::mark_sh_rebuild(self.store.path())?;
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
         if applied {
             unindex_sh_ram_head(&mut self.sh.ram_head.lock().unwrap(), &job);
         }

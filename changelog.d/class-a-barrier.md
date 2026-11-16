@@ -14,7 +14,10 @@ Fixed
   or kept a transaction that could not be read. For writes made by this
   binary no committed row names that tail, so open keeps the creates past
   the committed ones that still decode and that every body header covers.
-  A datadir torn below a committed create by an older binary still refuses. A short `input.body` header cuts the
+  A datadir an older binary tore below a committed block now opens: the
+  tip shrinks to the transactions that remain, and the lost create numbers
+  are held by tombstones that never count as spent or confirmed, so stale
+  spends and address history cannot attach to a later transaction. A short `input.body` header cuts the
   input locator the same way, and an input locator past that prefix is cut.
   A failed archive sync now latches until restart, so a retried fsync
   cannot commit over pages the kernel dropped. A spend checkpoint syncs the
@@ -27,3 +30,7 @@ Fixed
   temp file and renamed, with the directory synced. `store.secret` is
   owner-only before its first byte. A short mempool `meta` left by an older
   binary is moved aside like any other unreadable mempool image.
+- **A torn address index rebuilds itself.** When the scripthash
+  write-behind reads a torn record after a power cut, it marks the index
+  for a full rebuild on the next start instead of failing every few
+  blocks. Before, `RBITCOIN_SH_FORCE_REBUILD` was the only remedy.

@@ -89,8 +89,10 @@ impl Query {
         self.sh_force_rebuild.store(on, Ordering::SeqCst);
     }
 
+    /// The operator flag, or a torn slab the write-behind apply found.
     pub fn sh_force_rebuild(&self) -> bool {
         self.sh_force_rebuild.load(Ordering::SeqCst)
+            || rbitcoin_store::scripthash::sh_rebuild_marked(self.store.path())
     }
 
     /// Enter **direct** IBD with scripthash indexing **on** (library / test default).
@@ -318,6 +320,19 @@ impl Query {
 
     #[doc(hidden)]
     pub fn finalize_sh_unsorted_cancellable(
+        &self,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<u64, QueryError> {
+        let forced = self.sh_force_rebuild();
+        let n = self.finalize_sh_unsorted_inner(cancel)?;
+        if forced {
+            // The rebuild finished; a crash before this wipes and rebuilds again.
+            rbitcoin_store::scripthash::clear_sh_rebuild(self.store.path())?;
+        }
+        Ok(n)
+    }
+
+    fn finalize_sh_unsorted_inner(
         &self,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<u64, QueryError> {

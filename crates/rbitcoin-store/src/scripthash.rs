@@ -92,6 +92,30 @@ impl ColdProgress {
     }
 }
 
+/// One byte in the hot store: the next start wipes and rebuilds the index.
+pub const SH_REBUILD_NAME: &str = "scripthash.rebuild";
+
+/// The write-behind apply read a torn slab; rebuild on the next start.
+pub fn mark_sh_rebuild(store_dir: &Path) -> Result<(), StoreError> {
+    crate::file::write_synced_tmp_rename(&store_dir.join(SH_REBUILD_NAME), &[1])
+}
+
+pub fn sh_rebuild_marked(store_dir: &Path) -> bool {
+    store_dir.join(SH_REBUILD_NAME).is_file()
+}
+
+/// A finished rebuild drops the mark. A crash before this rebuilds again.
+pub fn clear_sh_rebuild(store_dir: &Path) -> Result<(), StoreError> {
+    let path = store_dir.join(SH_REBUILD_NAME);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            crate::file::fsync_parent_dir(store_dir).map_err(|e| StoreError::io(store_dir, e))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(StoreError::io(&path, e)),
+    }
+}
+
 /// Load durable inclusion HWM (`0` if missing/corrupt).
 pub fn load_include_hwm(store_dir: &Path) -> u64 {
     let p = store_dir.join(INCLUDE_HWM_NAME);

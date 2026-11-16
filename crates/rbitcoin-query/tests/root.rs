@@ -2259,3 +2259,39 @@ fn sh_views_skip_the_genesis_coinbase() {
     check("durable");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A torn scripthash slab found by the write-behind apply schedules a full
+/// rebuild for the next start instead of a crash loop.
+///
+/// The apply is the single writer under `sh.appender`, so a framing fault it
+/// reads is on disk, not a reader racing an append. The replay after a power
+/// cut re-applies the jobs above `include_hwm`, which are the ones that tore.
+#[test]
+fn torn_scripthash_slab_on_apply_marks_a_rebuild() {
+    let (dir, q) = temp_query("sh-torn-slab-marks-rebuild");
+    let mut prev = Fk::NULL;
+    let mut parent = None;
+    for h in 0..8u32 {
+        let (hdr, tx) = coinbase_block(h, prev, parent);
+        q.commit_class_a_only(&hdr, &[tx]).unwrap();
+        prev = q.confirm_block(Height(h), &hdr.hash).unwrap();
+        parent = Some(hdr.hash);
+    }
+    q.apply_sh_pending().unwrap();
+    assert!(!q.sh_force_rebuild());
+    let body = q.store.scripthash.ovf_file();
+    body.set_logical_len(rbitcoin_store::file::FILE_HEADER_LEN as u64)
+        .unwrap();
+    let (hdr, tx) = coinbase_block(8, prev, parent);
+    q.commit_class_a_only(&hdr, &[tx]).unwrap();
+    q.confirm_block(Height(8), &hdr.hash).unwrap();
+    assert!(
+        q.apply_sh_pending().is_err(),
+        "the torn slab must fail the apply"
+    );
+    assert!(rbitcoin_store::scripthash::sh_rebuild_marked(
+        q.store.path()
+    ));
+    assert!(q.sh_force_rebuild(), "the next start rebuilds the index");
+    let _ = std::fs::remove_dir_all(&dir);
+}
