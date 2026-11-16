@@ -936,6 +936,26 @@ fn unbroadcast_survives_reopen_and_logs_confirm_before_broadcast() {
     let _ = std::fs::remove_dir_all(&mp);
 }
 
+/// The unbroadcast set is replaced by a synced rename, never truncated in place.
+#[test]
+fn unbroadcast_set_is_published_through_a_synced_rename() {
+    let dir =
+        std::env::temp_dir().join(format!("rbitcoin-unbroadcast-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut set = std::collections::HashSet::new();
+    set.insert(Txid::from_byte_array([1u8; 32]));
+    rbitcoin_store::file::arm_fsync_dir_trace();
+    persist_unbroadcast_file(&dir, &set);
+    let synced = rbitcoin_store::file::take_fsynced_dirs();
+    assert!(
+        synced.iter().any(|d| d == &dir),
+        "unbroadcast name not synced: {synced:?}"
+    );
+    assert_eq!(load_unbroadcast_file(&dir), set);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `importmempool` logs each Core `LoadMempool` outcome: a fresh admit, a
 /// duplicate, an expired entry, and a tx that cannot enter.
 #[test]

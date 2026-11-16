@@ -1125,6 +1125,14 @@ pub fn open_or_init_meta(path: &Path) -> Result<(File, u64, u32, u32, u16), Memp
             .write(true)
             .open(path)
             .map_err(|e| MempoolError::io(path, e))?;
+        let len = file
+            .metadata()
+            .map_err(|e| MempoolError::io(path, e))?
+            .len();
+        // A torn sidecar, not an IO fault: open moves the image aside.
+        if len < META_LEN as u64 {
+            return Err(MempoolError::Corrupt("mempool meta short"));
+        }
         let mut buf = [0u8; META_LEN];
         file.read_exact(&mut buf)
             .map_err(|e| MempoolError::io(path, e))?;
@@ -1140,17 +1148,18 @@ pub fn open_or_init_meta(path: &Path) -> Result<(File, u64, u32, u32, u16), Memp
         }
         Ok((file, generation, slot_cap, live_count, schema))
     } else {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| MempoolError::io(path, e))?;
+        // Published whole: a crash leaves no `meta` or this one, never a short file.
         let mut buf = [0u8; META_LEN];
         write_meta_bytes(&mut buf, 0, DEFAULT_SLOT_CAP, 0);
-        file.write_all(&buf)
+        rbitcoin_store::file::write_synced_tmp_rename(path, &buf).map_err(|e| match e {
+            rbitcoin_store::StoreError::Io { path, source } => MempoolError::io(path, source),
+            other => MempoolError::io(path, std::io::Error::other(other.to_string())),
+        })?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
             .map_err(|e| MempoolError::io(path, e))?;
-        file.flush().map_err(|e| MempoolError::io(path, e))?;
         Ok((file, 0, DEFAULT_SLOT_CAP, 0, MEM_SCHEMA))
     }
 }

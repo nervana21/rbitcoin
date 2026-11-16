@@ -8,8 +8,6 @@ use crate::scripthash::ScriptHashTable;
 use crate::spender_table::SpenderTable;
 use crate::tx_table::{InputRecord, OutputRecord, TxRecord, TxTable};
 use rbitcoin_primitives::{schema_file_openable, Fk, Height, SCHEMA_VERSION, STORE_MAGIC};
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Sidecar in the hot `{datadir}/store`. Present when the append-only files live
@@ -2588,45 +2586,18 @@ fn replaces_incomplete_first_creation(err: &StoreError) -> bool {
     }
 }
 
+/// Publish store `meta` at the current [`SCHEMA_VERSION`] by a synced rename.
+///
+/// The first create writes it last, and a schema rewrite replaces it. Either
+/// way a crash leaves the old name or the whole new file, never a short one.
+/// The rename survives a crash before a witness cut: a 26 `meta` next to an
+/// empty witness locator is what an older binary truncates.
 #[doc(hidden)]
 pub fn write_meta(dir: &Path) -> Result<(), StoreError> {
-    let path = dir.join("meta");
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| StoreError::io(&path, e))?;
-    f.write_all(&STORE_MAGIC)
-        .map_err(|e| StoreError::io(&path, e))?;
-    f.write_all(&SCHEMA_VERSION.to_le_bytes())
-        .map_err(|e| StoreError::io(&path, e))?;
-    f.flush().map_err(|e| StoreError::io(&path, e))?;
-    Ok(())
-}
-
-/// Overwrite store `meta` with current [`SCHEMA_VERSION`].
-#[doc(hidden)]
-pub fn rewrite_meta_current(dir: &Path) -> Result<(), StoreError> {
-    let path = dir.join("meta");
-    let tmp = path.with_extension("meta.tmp");
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(|e| StoreError::io(&tmp, e))?;
-        f.write_all(&STORE_MAGIC)
-            .map_err(|e| StoreError::io(&tmp, e))?;
-        f.write_all(&SCHEMA_VERSION.to_le_bytes())
-            .map_err(|e| StoreError::io(&tmp, e))?;
-        f.sync_all().map_err(|e| StoreError::io(&tmp, e))?;
-    }
-    std::fs::rename(&tmp, &path).map_err(|e| StoreError::io(&path, e))?;
-    // The rename has to survive a crash before a witness cut. A 26 `meta`
-    // next to an empty witness locator is what an older binary truncates.
-    crate::file::fsync_parent_dir(dir).map_err(|e| StoreError::io(dir, e))?;
-    Ok(())
+    let mut bytes = Vec::with_capacity(STORE_MAGIC.len() + 2);
+    bytes.extend_from_slice(&STORE_MAGIC);
+    bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
+    crate::file::write_synced_tmp_rename(&dir.join("meta"), &bytes)
 }
 
 #[doc(hidden)]
@@ -2690,7 +2661,7 @@ pub fn drop_leftover_tx_height(path: &Path) {
 #[doc(hidden)]
 pub fn open_layout_rewrite_current(path: &Path, meta_ver: u16) -> Result<(), StoreError> {
     if meta_ver < SCHEMA_VERSION {
-        rewrite_meta_current(path)?;
+        write_meta(path)?;
     }
     Ok(())
 }

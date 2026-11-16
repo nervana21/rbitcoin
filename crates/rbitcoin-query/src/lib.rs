@@ -982,7 +982,7 @@ impl Query {
         self.sync_keep_window_files()?;
         // Current schema is on disk before the locator goes to zero. A crash
         // that leaves schema 26 and an empty locator is what a 26 binary wipes.
-        rbitcoin_store::store::rewrite_meta_current(self.store.path())?;
+        rbitcoin_store::store::write_meta(self.store.path())?;
         self.store.txs.input.flush()?;
         self.store.set_prune_seqsigwit_mode(true);
         let before = std::fs::metadata(self.store.txs.seqsigwit.body_file_path())

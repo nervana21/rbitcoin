@@ -117,3 +117,48 @@ fn load_rejects_overlong_secret_file() {
     assert_eq!(s.as_bytes()[0], 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The secret is published by a synced rename: the directory entry is
+/// durable, and the file is owner-only from its first byte.
+#[test]
+fn write_publishes_an_owner_only_secret_through_a_synced_rename() {
+    let dir = temp_dir();
+    rbitcoin_store::file::arm_fsync_dir_trace();
+    StoreSecret::generate()
+        .write_to_store_dir(dir.path())
+        .unwrap();
+    let synced = rbitcoin_store::file::take_fsynced_dirs();
+    assert!(
+        synced.iter().any(|d| d == dir.path()),
+        "store.secret name not synced: {synced:?}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.path().join("store.secret"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    assert!(
+        StoreSecret::generate()
+            .write_to_store_dir(dir.path())
+            .is_err(),
+        "an existing secret is never replaced"
+    );
+}
+
+/// Store `meta` is the create commit. Its name is synced like the rewrite.
+#[test]
+fn store_meta_is_published_through_a_synced_rename() {
+    let dir = temp_dir();
+    rbitcoin_store::file::arm_fsync_dir_trace();
+    rbitcoin_store::store::write_meta(dir.path()).unwrap();
+    let synced = rbitcoin_store::file::take_fsynced_dirs();
+    assert!(
+        synced.iter().any(|d| d == dir.path()),
+        "store meta name not synced: {synced:?}"
+    );
+    assert_eq!(std::fs::metadata(dir.path().join("meta")).unwrap().len(), 6);
+}
