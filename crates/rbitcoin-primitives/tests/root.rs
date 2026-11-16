@@ -76,6 +76,8 @@ fn table_kind_roundtrip() {
     assert_eq!(TableKind::Input.as_u16(), 22);
     assert_eq!(TableKind::InputLoc.as_u16(), 23);
     assert_eq!(TableKind::from_u16(24), Some(TableKind::BlockFilter));
+    assert_eq!(TableKind::from_u16(25), Some(TableKind::SpendDelta));
+    assert_eq!(TableKind::from_u16(26), Some(TableKind::SpendDeltaIdx));
 }
 
 #[test]
@@ -98,7 +100,7 @@ fn schema_file_openable_is_22_through_current() {
 #[test]
 fn constants_stable() {
     assert_eq!(STORE_MAGIC, *b"RBT1");
-    assert_eq!(SCHEMA_VERSION, 29);
+    assert_eq!(SCHEMA_VERSION, 30);
     assert!(!VERSION.is_empty());
     assert!(schema_file_openable(26));
     assert!(schema_file_openable(25));
@@ -113,7 +115,8 @@ fn constants_stable() {
     assert!(schema_file_openable(27));
     assert!(schema_file_openable(28));
     assert!(schema_file_openable(29));
-    assert!(!schema_file_openable(30));
+    assert!(schema_file_openable(30));
+    assert!(!schema_file_openable(31));
     assert!(!schema_file_openable(0));
 }
 

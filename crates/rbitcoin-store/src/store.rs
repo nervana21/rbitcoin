@@ -451,7 +451,7 @@ pub fn keep_unspent_vout_subsequence<T>(
 }
 
 #[cfg(debug_assertions)]
-type SpendFreezeProbe = fn(&SpenderTable, &crate::spend_page_log::SpendPageLog);
+type SpendFreezeProbe = fn(&SpenderTable, &crate::spend_delta::SpendPageLog);
 
 #[cfg(debug_assertions)]
 type SpendFoldProbe = fn();
@@ -1993,7 +1993,7 @@ impl Store {
         self.txs.open_spend_edge_count()
     }
 
-    pub fn bind_spend_sync_wake(&self, wake: crate::spend_page_log::SpendSyncWake) {
+    pub fn bind_spend_sync_wake(&self, wake: crate::spend_delta::SpendSyncWake) {
         self.txs.bind_spend_sync_wake(wake);
     }
 

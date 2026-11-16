@@ -140,7 +140,7 @@ pub const STORE_MAGIC: [u8; 4] = *b"RBT1";
 ///         this binary opens.
 /// **21 and older:** not opened. Meta below 22 is one wipe-and-IBD refuse.
 ///         Those layouts are archaeology in `SCHEMA_HISTORY.md`.
-pub const SCHEMA_VERSION: u16 = 29;
+pub const SCHEMA_VERSION: u16 = 30;
 
 /// True if `ver` may appear in store `meta` / table headers this binary can open.
 ///
@@ -336,6 +336,10 @@ pub enum TableKind {
     InputLoc = 23,
     /// Optional BIP158 basic filter bytes (`blockfilter.body`).
     BlockFilter = 24,
+    /// Schema-30 spend delta records (`spent.delta`).
+    SpendDelta = 25,
+    /// Schema-30 spend delta page directory (`spent.delta.idx`).
+    SpendDeltaIdx = 26,
 }
 
 impl TableKind {
@@ -363,6 +367,8 @@ impl TableKind {
             22 => Some(TableKind::Input),
             23 => Some(TableKind::InputLoc),
             24 => Some(TableKind::BlockFilter),
+            25 => Some(TableKind::SpendDelta),
+            26 => Some(TableKind::SpendDeltaIdx),
             _ => None,
         }
     }

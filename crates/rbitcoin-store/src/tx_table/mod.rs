@@ -685,8 +685,8 @@ pub struct TxTable {
     pub prune_seqsigwit_mode: std::sync::atomic::AtomicBool,
     /// `--datadir-hdd`: Class A body stems are one pwrite wave each.
     pub datadir_hdd: std::sync::atomic::AtomicBool,
-    /// Historical spend slots not yet folded into `spent.body`.
-    spend_pages: crate::spend_page_log::SpendPageLog,
+    /// Schema-30 spend delta overlay over `spent.body`.
+    spend_pages: crate::spend_delta::SpendPageLog,
     /// Per-fk packed `txout` decodes for an outs reader
     /// ([`Self::get_meta_and_outputs`], and [`Self::get`] through it), the
     /// decode the mempool and block-proposal pins count. [`Self::get_full`] is
@@ -1159,6 +1159,26 @@ fn note_spend_meta_read(groups: usize) {
     }
 }
 
+/// Open the schema-30 delta overlay. A schema-29 page log is folded once
+/// into `spent.body` and its files are removed before the new overlay starts.
+fn open_spend_delta(
+    dir: &Path,
+    spent: &VarTable,
+) -> Result<crate::spend_delta::SpendPageLog, StoreError> {
+    if dir
+        .join(crate::spend_page_log::SPEND_PAGES_COMMIT_NAME)
+        .exists()
+    {
+        let old =
+            crate::spend_page_log::SpendPageLog::load_clipped(dir, spent.body_published_len())?;
+        old.migrate_fold_all(
+            |off, image| spent.write_body_pwrite(off, image),
+            || spent.sync_data_only(),
+        )?;
+    }
+    crate::spend_delta::SpendPageLog::load_clipped(dir, spent.body_published_len())
+}
+
 impl TxTable {
     pub fn create(dir: &Path) -> Result<Self, StoreError> {
         Self::create_with_opts(dir, HeadOpenOpts::MAINNET)
@@ -1220,7 +1240,7 @@ impl TxTable {
             rebuild_workers: workers,
             prune_seqsigwit_mode: std::sync::atomic::AtomicBool::new(false),
             datadir_hdd: std::sync::atomic::AtomicBool::new(false),
-            spend_pages: crate::spend_page_log::SpendPageLog::create(dir),
+            spend_pages: crate::spend_delta::SpendPageLog::create(dir),
         })
     }
 
@@ -1439,7 +1459,7 @@ impl TxTable {
             }
         };
         let secret = crate::store_secret::StoreSecret::load_existing(dir)?;
-        let spent_body_end = spent.body_published_len();
+        let spend_pages = open_spend_delta(dir, &spent)?;
         let t = Self {
             body,
             seqsigwit,
@@ -1458,7 +1478,7 @@ impl TxTable {
             rebuild_workers: workers,
             prune_seqsigwit_mode: std::sync::atomic::AtomicBool::new(prune_seqsigwit_mode),
             datadir_hdd: std::sync::atomic::AtomicBool::new(false),
-            spend_pages: crate::spend_page_log::SpendPageLog::load_clipped(dir, spent_body_end)?,
+            spend_pages,
         };
         match input_open_tail(t.input.count(), n_bodies, t.seqsigwit.count()) {
             InputOpenTail::Backfill { from } => {
@@ -2640,8 +2660,8 @@ impl TxTable {
     ) -> Result<(), StoreError>
     where
         K: FnMut(&[u8; OutputRecord::SPENT_SLOT_LEN]) -> Result<bool, StoreError>,
-        B: FnOnce(&crate::spend_page_log::SpendPageLog, &dyn Fn() -> u64) -> Result<(), StoreError>,
-        S: FnOnce(&crate::spend_page_log::SpendPageLog) -> Result<u32, StoreError>,
+        B: FnOnce(&crate::spend_delta::SpendPageLog, &dyn Fn() -> u64) -> Result<(), StoreError>,
+        S: FnOnce(&crate::spend_delta::SpendPageLog) -> Result<u32, StoreError>,
     {
         let published = self.spent.body_published_len();
         let len_now = || self.spent.body_published_len();
@@ -2656,7 +2676,7 @@ impl TxTable {
                 Ok(buf)
             },
             keep,
-            |log| before_freeze(log, &len_now),
+            |log, _len| before_freeze(log, &len_now),
             seal_tip,
         )
     }
@@ -2671,7 +2691,7 @@ impl TxTable {
         self.spend_pages.unlink_if_synced(live);
     }
 
-    pub(crate) fn bind_spend_sync_wake(&self, wake: crate::spend_page_log::SpendSyncWake) {
+    pub(crate) fn bind_spend_sync_wake(&self, wake: crate::spend_delta::SpendSyncWake) {
         self.spend_pages.bind_sync_wake(wake);
     }
 
@@ -2759,7 +2779,7 @@ impl TxTable {
         let slot_vin = if multi { 0 } else { vin };
         let meta = encode_spent_slot(flags, field, slot_vin)?;
         let published = self.spent.body_published_len();
-        if self.spend_pages.covers(abs) || crate::spend_page_log::is_historical(published, abs) {
+        if self.spend_pages.covers(abs) || crate::spend_delta::is_historical(published, abs) {
             return self.note_historical_spend_slots(&[(abs, meta)]);
         }
         self.spent.write_body_pwrite(abs, &meta)

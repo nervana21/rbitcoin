@@ -100,6 +100,8 @@ pub mod sp_tweaks;
 pub mod sp_tweaks_uring;
 pub mod spend_annotate_uring;
 #[doc(hidden)]
+pub mod spend_delta;
+#[doc(hidden)]
 pub mod spend_durable;
 #[doc(hidden)]
 pub mod spend_page_log;

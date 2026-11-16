@@ -587,7 +587,7 @@ fn apply_prepared_spend_writes(
     let mut cold = Vec::new();
     let mut hist: Vec<(u64, [u8; META_LEN])> = Vec::new();
     for w in writes {
-        if crate::spend_page_log::is_historical(published, w.0) {
+        if crate::spend_delta::is_historical(published, w.0) {
             hist.push((w.0, w.5));
         } else {
             cold.push((w.1, w.2, w.3, w.4));

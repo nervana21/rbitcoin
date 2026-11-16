@@ -1,7 +1,7 @@
 # Schema history
 
 Historic on-disk layouts for the rbitcoin chain store.  
-**Current layout:** [`SCHEMA.md`](./SCHEMA.md) (`SCHEMA_VERSION = 29`).
+**Current layout:** [`SCHEMA.md`](./SCHEMA.md) (`SCHEMA_VERSION = 30`).
 
 Until 1.0 there is **no in-place migration**: a new major layout generally means wipe the store and redo IBD. This file is for archaeology, code archaeology, and understanding why the current design looks the way it does.
 
@@ -13,7 +13,8 @@ Versions below are listed **newest → oldest** after the summary table.
 
 | Version | Headline change | Still in current tree as… |
 |--------:|-----------------|---------------------------|
-| **29** | Each `spend.pages` record names the generation file that holds that image. An unchanged page stays in the older file. A 28 binary would read every offset as the newest file, so it refuses 29 `meta`. Open rewrites 22–28 `meta` to 29. | **Current** |
+| **30** | `spent.delta` cumulative page records + dense `spent.delta.idx` over unchanged `spent.body`. The 29 page log is folded once on open. A 29 binary refuses 30 `meta`. | **Current** |
+| **29** | Each `spend.pages` record names the generation file that holds that image. An unchanged page stays in the older file. A 28 binary would read every offset as the newest file, so it refuses 29 `meta`. Open rewrites 22–28 `meta` to 29. | superseded by 30 |
 | **28** | `meta` only. A 27 binary does not read `spend.pages` and would hide spends it wrote into `spent.body` under a live log, so it refuses 28 `meta`. A 28 binary rewrote 22–27 `meta` to 28. | Prior |
 | **27** | `meta` only. A pruned witness stem can be a header while creates remain. A 26 binary would truncate that chain, so it refuses 27 `meta`. Open rewrites 22–26 `meta` to 27, pruned or not. | Prior |
 | **26** | `header.body` 88 B. Occupied 24/25 strips trailing `size`/`weight`. Block size and weight come from `txstat`. | Prior |
@@ -42,6 +43,10 @@ Versions below are listed **newest → oldest** after the summary table.
 | **≤3** | Early mmap store; fat heads; mixed prev encoding | Mostly gone |
 
 ---
+
+## v30 (spend delta overlay)
+
+`spent.delta` holds cumulative per-page overrides over `spent.body`; `spent.delta.idx` is a dense page directory; `spent.delta.commit` names the snapshot. The 29 `spend.pages` page log is folded into `spent.body` once on open and removed. The `spent.body` 8-byte slot layout and `create.loc` offsets do not change.
 
 ## v29 (page image stays in its generation file)
 

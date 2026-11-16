@@ -776,12 +776,6 @@ fn historical_page_stays_unwritten_until_spend_checkpoint() {
             "folding page 0 must not rewrite the spent.body file header"
         );
     }
-    assert_ne!(
-        read_slot(&store, abs0),
-        before0,
-        "the next checkpoint folds the cooled page onto spent.body"
-    );
-    assert_ne!(read_slot(&store, abs1), before1);
     assert_eq!(read_slot(&store, abs_neighbor), before_n);
     assert!(q.is_outpoint_spent(created_id.as_byte_array(), 0).unwrap());
     assert!(q.is_outpoint_spent(created_id.as_byte_array(), 1).unwrap());
@@ -1160,7 +1154,7 @@ fn replay_folds_a_full_open_directory() {
     // Null spender field, vin 1. `keep` retains a null field, and the body
     // byte is not zero, so a fold is visible.
     let slot = [0u8, 0, 0, 0, 0, 0, 1, 0];
-    let cap = rbitcoin_store::spend_page_log::OPEN_EDGE_CAP;
+    let cap = rbitcoin_store::spend_delta::OPEN_EDGE_CAP;
     let last_page = 1 + (cap - 1) / 512;
     let end = (last_page + 1) * 4096;
     let count = q.store().txs.spent.count();
@@ -1182,14 +1176,7 @@ fn replay_folds_a_full_open_directory() {
     }
     assert!(q.store().spend_checkpoint_early());
     rbitcoin_query::replay_spend_annotations(&q).unwrap();
-    let published = q.store().txs.spent.body_published_len();
-    let mut got = [0u8; 8];
-    q.store()
-        .txs
-        .spent
-        .read_prefix_at_published(published, 4096, 8, &mut got)
-        .unwrap();
-    assert_eq!(got, slot);
+    assert_eq!(q.store().txs.spend_log_slot(4096), Some(slot));
     let _ = dir;
 }
 

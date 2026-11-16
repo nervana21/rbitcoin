@@ -105,7 +105,6 @@ fn clamp_drops_a_stale_height() {
 #[test]
 fn clamp_lowers_the_marker_when_the_hold_patch_fails() {
     use rbitcoin_primitives::{Fk, Height};
-    use rbitcoin_store::spend_page_log::SPEND_PAGES_COMMIT_NAME;
     use rbitcoin_store::Store;
 
     let dir = std::env::temp_dir().join(format!(
@@ -142,7 +141,7 @@ fn clamp_lowers_the_marker_when_the_hold_patch_fails() {
     }
     s.note_spend_snapshot(4);
     s.checkpoint_spend_through(4).unwrap();
-    let commit = dir.join(SPEND_PAGES_COMMIT_NAME);
+    let commit = dir.join(rbitcoin_store::spend_delta::SPEND_DELTA_COMMIT_NAME);
     assert!(commit.is_file(), "the checkpoint must leave a commit file");
     for h in (1..=4u32).rev() {
         s.confirmed

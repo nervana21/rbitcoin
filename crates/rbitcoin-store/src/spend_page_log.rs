@@ -1758,6 +1758,35 @@ impl SpendPageLog {
         }
     }
 
+    /// Fold every committed page once, then remove the schema-29 page log.
+    ///
+    /// Used only when opening a 29 store under schema 30. The old log is
+    /// transient; folding it into `spent.body` preserves every durable slot
+    /// before the new delta overlay starts empty.
+    pub fn migrate_fold_all<W, S>(&self, mut write_page: W, mut sync: S) -> Result<(), StoreError>
+    where
+        W: FnMut(u64, &[u8]) -> Result<(), StoreError>,
+        S: FnMut() -> Result<(), StoreError>,
+    {
+        let pages: Vec<(u64, PageLoc)> = {
+            let g = self.lock();
+            g.committed
+                .iter()
+                .map(|(off, page)| (*off, page.loc))
+                .collect()
+        };
+        for (off, loc) in pages {
+            let image = self.read_loc(loc);
+            if let Some((write_off, payload)) = fold_payload(off, &image) {
+                write_page(write_off, payload)?;
+            }
+        }
+        sync()?;
+        self.lock().committed.clear();
+        self.delete_generation_files();
+        Ok(())
+    }
+
     /// Copy cooled pages, then drop those directory entries.
     ///
     /// Callers that must not hold a reader lock across the body copy use
