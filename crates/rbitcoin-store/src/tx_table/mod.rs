@@ -1007,9 +1007,11 @@ pub fn repair_class_a_count_skew(
     let n = skewed.unwrap_or(n_loc).min(covered);
     let skewed = skewed.or((n < n_loc).then_some(n));
     let (tx_end, sp_end, in_end) = class_a_skew_stem_ends(&stems, n, prune_seqsigwit_mode)?;
+    // An input stem past the count is that same unpublished tail.
     let ahead = stems.body.body_logical_len() > tx_end
         || stems.spent.body_logical_len() > sp_end
-        || (!prune_seqsigwit_mode && stems.seqsigwit.body_logical_len() > in_end);
+        || (!prune_seqsigwit_mode && stems.seqsigwit.body_logical_len() > in_end)
+        || stems.input.count() > n;
     if skewed.is_none() && !ahead {
         return Ok(false);
     }

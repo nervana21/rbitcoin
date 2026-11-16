@@ -1288,3 +1288,104 @@ fn class_a_sync_failure_stops_the_class_c_commit() {
     assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn store_image(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for ent in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let rel = p.strip_prefix(dir).unwrap().to_path_buf();
+                out.insert(rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+fn write_image(dir: &std::path::Path, image: &std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+    let _ = std::fs::remove_dir_all(dir);
+    for (rel, bytes) in image {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, bytes).unwrap();
+    }
+}
+
+/// Power-loss model for the connect barrier.
+///
+/// Height 0 is sealed. The next block's archive is written with no barrier.
+/// Each archive file then keeps either every write since the seal or none of
+/// them. Every single dropped file, and every single kept file, is one
+/// image. Each reopens at the sealed tip with the sealed creates, and
+/// the next block connects and seals on top of it. `tx.head` keeps what it
+/// wrote: its `meta` is synced on insert and open repairs a head that leads.
+#[test]
+fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
+    let dir = tmp();
+    let s = Store::create_tiny(&dir).unwrap();
+    let write = rbitcoin_store::ClassCWrite::for_test();
+    let (genesis, parent) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(0)));
+    s.txs.head.flush().unwrap();
+    let sealed = store_image(&dir);
+    let (rec, ins, outs) = coinbase(1);
+    let (rec2, ins2, outs2) = coinbase(2);
+    s.put_tx_full_batch_indexed(&[(rec, ins, outs), (rec2, ins2, outs2)], false)
+        .unwrap();
+    drop(s);
+    let torn = store_image(&dir);
+    let changed: Vec<&PathBuf> = torn
+        .iter()
+        .filter(|(rel, bytes)| sealed.get(*rel) != Some(*bytes))
+        .filter(|(rel, _)| !rel.starts_with("tx.head"))
+        .map(|(rel, _)| rel)
+        .collect();
+    assert!(changed.len() >= 8, "archive files written: {changed:?}");
+    let n = changed.len();
+    let all = (1u32 << n) - 1;
+    let mut masks = vec![0, all];
+    for bit in 0..n {
+        masks.extend([1u32 << bit, all & !(1u32 << bit)]);
+    }
+    let img = tmp();
+    for mask in masks {
+        let mut image = torn.clone();
+        let mut dropped = Vec::new();
+        for (bit, rel) in changed.iter().enumerate() {
+            if mask & (1 << bit) == 0 {
+                continue;
+            }
+            dropped.push(rel.display().to_string());
+            match sealed.get(*rel) {
+                Some(bytes) => image.insert((*rel).clone(), bytes.clone()),
+                None => image.remove(*rel),
+            };
+        }
+        write_image(&img, &image);
+        let s = Store::open_tiny(&img)
+            .unwrap_or_else(|e| panic!("dropped {dropped:?}: open failed: {e}"));
+        assert_eq!(
+            s.confirmed.tip_height(),
+            Some(Height(0)),
+            "dropped {dropped:?}"
+        );
+        assert!(
+            s.txs.count() >= 1,
+            "dropped {dropped:?}: sealed create lost"
+        );
+        assert_eq!(s.txs.body_txid(Fk(1)).unwrap(), [0u8; 32]);
+        connect_coinbase(&s, &write, 1, genesis, parent);
+        assert_eq!(
+            s.flush_class_c_tip()
+                .unwrap_or_else(|e| panic!("dropped {dropped:?}: next seal: {e}")),
+            Some(Height(1)),
+            "dropped {dropped:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&img);
+    let _ = std::fs::remove_dir_all(&dir);
+}
