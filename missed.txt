@@ -2158,3 +2158,66 @@ MISSED   crates/rbitcoin-mempool/src/fee_est.rs:392:15: replace || with && in fe
 MISSED   crates/rbitcoin-mempool/src/fee_est.rs:395:15: replace > with == in fee_at_target_sat_kvb in 9s build + 84s test
 MISSED   crates/rbitcoin-mempool/src/fee_est.rs:395:15: replace > with >= in fee_at_target_sat_kvb in 8s build + 84s test
 MISSED   crates/rbitcoin-mempool/src/orphanage.rs:487:16: replace == with != in Orphanage::forget_taken_gen in 118s build + 83s test
+# 43823266525 1 28f3c89bf0e4cbc5c6f211856c14d5c6d7a6fbe4
+MISSED   crates/rbitcoin-ibd/src/ibd/state.rs:790:29: replace > with >= in HeightIndex::retain_outside in 84s build + 57s test
+MISSED   crates/rbitcoin-ibd/src/ibd/state.rs:793:26: replace - with + in HeightIndex::retain_outside in 4s build + 56s test
+MISSED   crates/rbitcoin-ibd/src/ibd/state.rs:795:24: replace < with <= in HeightIndex::retain_outside in 3s build + 55s test
+MISSED   crates/rbitcoin-ibd/src/ibd/state.rs:822:21: replace > with == in HeightIndex::shrink_ends in 5s build + 56s test
+MISSED   crates/rbitcoin-log/src/lib.rs:310:46: replace < with <= in info_repeated in 13s build + 77s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:548:16: replace > with >= in SiblingEviction::for_package in 76s build + 67s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:1674:18: replace > with >= in ActiveMempool::check_truc in 7s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:1684:47: replace > with >= in ActiveMempool::check_truc in 7s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:1703:52: replace && with || in ActiveMempool::check_truc in 7s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:2170:79: replace && with || in ActiveMempool::dust_spender in 7s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:2170:38: replace && with || in ActiveMempool::dust_spender in 8s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/accept.rs:2572:55: replace match guard policy::dust_vouts(tx).next().is_some() with true in ActiveMempool::accept_failure_record in 8s build + 67s test
+MISSED   crates/rbitcoin-mempool/src/fee_analog.rs:43:34: replace + with * in lowest_hurdle in 76s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/graph.rs:1019:37: replace != with == in TxGraph::mining_chunks_for_delta in 74s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:111:57: replace & with | in TxSet::intersection in 79s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:119:9: replace TxSet::is_empty -> bool with false in 8s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:139:25: replace * with / in TxSet::iter in 8s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:228:21: delete match arm Ordering::Greater in DepGraph::linearize in 8s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:262:40: replace + with * in DepGraph::output_order in 7s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:281:25: delete match arm Ordering::Greater in DepGraph::output_order in 7s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:297:21: delete match arm Ordering::Greater in DepGraph::output_order in 7s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/linearize.rs:314:28: replace == with != in DepGraph::post_linearize in 7s build + 69s test
+MISSED   crates/rbitcoin-net/src/asmap.rs:63:9: replace AsMap::is_empty -> bool with true in 76s build + 47s test
+MISSED   crates/rbitcoin-net/src/asmap.rs:63:9: replace AsMap::is_empty -> bool with false in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/cache.rs:139:41: replace - with + in BlockCache::push_best in 83s build + 48s test
+MISSED   crates/rbitcoin-net/src/cache.rs:139:41: replace - with / in BlockCache::push_best in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:929:33: replace | with ^ in ChainHub::note_block_assembled in 6s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:1067:33: replace || with && in ChainHub::maintain_pool_after_ibd in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:1514:21: replace || with && in ChainHub::chaintips in 7s build + 47s test
+MISSED   crates/rbitcoin-net/src/chain.rs:1515:24: delete ! in ChainHub::chaintips in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2258:62: replace || with && in ChainHub::min_diff_walk_bits in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2650:20: replace > with == in ChainHub::confirm_empty_regtest in 7s build + 47s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2650:20: replace > with >= in ChainHub::confirm_empty_regtest in 6s build + 47s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2682:57: replace - with + in ChainHub::confirm_empty_regtest in 6s build + 47s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2682:57: replace - with / in ChainHub::confirm_empty_regtest in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2788:20: replace > with == in ChainHub::generate_paying_async in 6s build + 47s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2788:20: replace > with >= in ChainHub::generate_paying_async in 6s build + 47s test
+MISSED   crates/rbitcoin-net/src/chain.rs:2813:34: replace == with != in ChainHub::generate_paying_async in 7s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:3165:28: replace && with || in ChainHub::invalidate_block_inner in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:3919:12: delete ! in ChainHub::finish_branch_reorg in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4202:9: replace ChainHub::wait_tip_stable_for_rpc with () in 7s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4709:20: replace < with <= in ChainHub::disconnect_harvest_in_commit in 7s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4767:9: replace ChainHub::reset_side_branch_walks with () in 7s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4772:9: replace ChainHub::side_branch_walks -> u64 with 1 in 7s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4787:9: replace ChainHub::take_min_diff_walk_steps -> u64 with 0 in 7s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4787:9: replace ChainHub::take_min_diff_walk_steps -> u64 with 1 in 7s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4792:9: replace ChainHub::note_path_work_step with () in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4797:9: replace ChainHub::take_path_work_steps -> u64 with 0 in 6s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4797:9: replace ChainHub::take_path_work_steps -> u64 with 1 in 6s build + 49s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4802:9: replace ChainHub::note_stored_header_lookup with () in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4807:9: replace ChainHub::take_stored_header_lookups -> u64 with 0 in 6s build + 48s test
+MISSED   crates/rbitcoin-net/src/chain.rs:4807:9: replace ChainHub::take_stored_header_lookups -> u64 with 1 in 6s build + 48s test
+MISSED   crates/rbitcoin-mempool/src/store.rs:650:50: replace * with / in Mempool::live_accept_secs in 82s build + 69s test
+MISSED   crates/rbitcoin-mempool/src/store.rs:767:33: replace + with * in Mempool::testing_set_slot_cap in 7s build + 70s test
+MISSED   crates/rbitcoin-mempool/src/store.rs:767:50: replace * with + in Mempool::testing_set_slot_cap in 7s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/store.rs:767:50: replace * with / in Mempool::testing_set_slot_cap in 8s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/store.rs:825:50: replace * with / in Mempool::set_slot_trust_kept in 7s build + 68s test
+MISSED   crates/rbitcoin-mempool/src/store.rs:834:16: replace > with >= in Mempool::reserve_body in 7s build + 68s test
+MISSED   crates/rbitcoin-net/src/asmap.rs:59:9: replace AsMap::len -> usize with 0 in 4s build + 21s test
+MISSED   crates/rbitcoin-net/src/asmap.rs:59:9: replace AsMap::len -> usize with 1 in 4s build + 21s test
+MISSED   crates/rbitcoin-net/src/asmap.rs:75:9: replace AsMap::digest_hex8 -> String with String::new() in 8s build + 21s test
+MISSED   crates/rbitcoin-net/src/asmap.rs:75:9: replace AsMap::digest_hex8 -> String with "xyzzy".into() in 4s build + 21s test
