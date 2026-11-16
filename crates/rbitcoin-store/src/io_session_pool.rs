@@ -26,8 +26,17 @@ pub struct Job {
     pub ptr: *mut u8,
     pub len: usize,
     pub user_data: u64,
-    pub write: bool,
+    pub op: JobOp,
     pub cq: Arc<SessionCq>,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobOp {
+    Read,
+    Write,
+    /// `sync_data` on the handle. No buffer.
+    Sync,
 }
 
 // SAFETY: the machine thread keeps `ptr` live until the matching CQE is harvested.
@@ -103,7 +112,7 @@ impl PoolEngine {
             buf.as_mut_ptr(),
             buf.len(),
             user_data,
-            false,
+            JobOp::Read,
         )
     }
 
@@ -120,8 +129,12 @@ impl PoolEngine {
             buf.as_ptr() as *mut u8,
             buf.len(),
             user_data,
-            true,
+            JobOp::Write,
         )
+    }
+
+    pub fn push_sync(&self, handle: IoHandle, user_data: u64) -> Result<(), StoreError> {
+        self.push(handle, 0, std::ptr::null_mut(), 0, user_data, JobOp::Sync)
     }
 
     #[doc(hidden)]
@@ -132,9 +145,9 @@ impl PoolEngine {
         ptr: *mut u8,
         len: usize,
         user_data: u64,
-        write: bool,
+        op: JobOp,
     ) -> Result<(), StoreError> {
-        if len == 0 {
+        if len == 0 && op != JobOp::Sync {
             return Ok(());
         }
         self.cq.inflight.fetch_add(1, Ordering::AcqRel);
@@ -146,7 +159,7 @@ impl PoolEngine {
                 ptr,
                 len,
                 user_data,
-                write,
+                op,
                 cq: Arc::clone(&self.cq),
             });
         }
@@ -207,14 +220,18 @@ pub fn worker_loop(shared: Arc<SharedPool>) {
                 q = shared.job_cv.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
-        let res = if job.write {
-            // SAFETY: `pwrite` only reads. A mutable slice would alias a shared buffer.
-            let buf = unsafe { std::slice::from_raw_parts(job.ptr, job.len) };
-            job.handle.pwrite(job.offset, buf)
-        } else {
-            // SAFETY: the caller keeps this pread buffer alive until the CQE is harvested.
-            let buf = unsafe { std::slice::from_raw_parts_mut(job.ptr, job.len) };
-            job.handle.pread(job.offset, buf)
+        let res = match job.op {
+            JobOp::Write => {
+                // SAFETY: `pwrite` only reads. A mutable slice would alias a shared buffer.
+                let buf = unsafe { std::slice::from_raw_parts(job.ptr, job.len) };
+                job.handle.pwrite(job.offset, buf)
+            }
+            JobOp::Read => {
+                // SAFETY: the caller keeps this pread buffer alive until the CQE is harvested.
+                let buf = unsafe { std::slice::from_raw_parts_mut(job.ptr, job.len) };
+                job.handle.pread(job.offset, buf)
+            }
+            JobOp::Sync => job.handle.sync_data(),
         };
         {
             let mut cq = job.cq.cqes.lock().unwrap_or_else(|e| e.into_inner());

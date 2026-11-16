@@ -224,12 +224,6 @@ impl TxStat {
         Ok(())
     }
 
-    pub fn sync_data_only(&self) -> Result<(), StoreError> {
-        self.body.sync_data_only()?;
-        self.ovf.sync_data_only()?;
-        self.blk.sync_data_only()
-    }
-
     #[cfg(debug_assertions)]
     pub fn pending_sync(&self) -> bool {
         self.body.pending_sync() || self.ovf.pending_sync() || self.blk.pending_sync()

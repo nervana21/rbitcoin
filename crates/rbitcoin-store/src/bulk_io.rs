@@ -562,6 +562,83 @@ pub fn pwrite_batch_on_session(
     ok
 }
 
+/// `sync_data` every handle on the configured bulk-IO session, all in
+/// flight at once: io_uring datasync `FSYNC` ops, the shared pool's workers,
+/// or IOCP (which flushes inline). Returns each handle's 0 or negated errno.
+///
+/// `None` when no session runs (`RBITCOIN_IO=pread`, or it did not open)
+/// or the batch failed before every result came back; the caller syncs one
+/// at a time.
+pub fn sync_data_batch(handles: &[IoHandle]) -> Option<Vec<i32>> {
+    if handles.is_empty() {
+        return Some(Vec::new());
+    }
+    if !io_uring_enabled() {
+        return None;
+    }
+    with_bulk_session(|session| sync_data_batch_on_session(session, handles)).flatten()
+}
+
+fn sync_data_batch_on_session(
+    session: &mut crate::uring_session::UringSession,
+    handles: &[IoHandle],
+) -> Option<Vec<i32>> {
+    use crate::uring_session::{pack_ud, unpack_ud, KIND_BULK_FSYNC};
+    session.begin_batch().ok()?;
+    let epoch = session.epoch();
+    let n = handles.len();
+    let mut res = vec![i32::MIN; n];
+    let mut next = 0usize;
+    let mut completed = 0usize;
+    while completed < n {
+        while next < n && session.free_sq() > 0 {
+            let ud = pack_ud(KIND_BULK_FSYNC, epoch, next as u32);
+            if session.push_sync_data(handles[next], ud).is_err() {
+                if session.in_flight() == 0 {
+                    let _ = session.drain_all();
+                    return None;
+                }
+                break;
+            }
+            next += 1;
+        }
+        #[cfg(debug_assertions)]
+        if next == n && completed == 0 {
+            crate::io_handle::note_sync_batch(handles);
+        }
+        session.sync_submission();
+        let cqes = match session.harvest_ready() {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = session.drain_all();
+                return None;
+            }
+        };
+        if cqes.is_empty() {
+            match empty_harvest_next(session.submit_and_wait_one().is_ok()) {
+                EmptyHarvest::Retry => continue,
+                EmptyHarvest::Fail => {
+                    let _ = session.drain_all();
+                    return None;
+                }
+            }
+        }
+        for (ud, r) in cqes {
+            let (kind, ep, slot) = unpack_ud(ud);
+            let i = slot as usize;
+            if kind != KIND_BULK_FSYNC || ep != epoch || i >= n || res[i] != i32::MIN {
+                session.poison();
+                let _ = session.drain_all();
+                return None;
+            }
+            res[i] = r;
+            completed += 1;
+        }
+    }
+    session.drain_all().ok()?;
+    Some(res)
+}
+
 /// Unfilled or failed pwrite ops are not success. Caller libc-retries.
 #[doc(hidden)]
 pub fn finish_pwrite_wave(ops: &mut [WriteOp<'_>]) -> bool {

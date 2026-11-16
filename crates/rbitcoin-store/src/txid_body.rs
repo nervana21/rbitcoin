@@ -72,10 +72,6 @@ impl TxidBody {
         self.file.flush()
     }
 
-    pub fn sync_data_only(&self) -> Result<(), StoreError> {
-        self.file.sync_data_only()
-    }
-
     #[cfg(debug_assertions)]
     pub fn pending_sync(&self) -> bool {
         self.file.pending_sync()

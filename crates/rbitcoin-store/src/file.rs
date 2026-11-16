@@ -1252,6 +1252,42 @@ impl TableFile {
             .map_err(|e| StoreError::io(&self.path, e))
     }
 
+    /// [`Self::sync_data_only`] on every file, with the waits overlapped.
+    ///
+    /// The syncs go to the configured bulk-IO session together
+    /// ([`crate::bulk_io::sync_data_batch`]): one io_uring submission, the
+    /// shared pool's workers, or IOCP. The filesystem can then share journal
+    /// commits and device cache flushes between them. With
+    /// `RBITCOIN_IO=pread`, or when the session fails, they run one after
+    /// another.
+    pub fn sync_data_all(files: &[&TableFile]) -> Result<(), StoreError> {
+        #[cfg(debug_assertions)]
+        for f in files {
+            if crate::io_handle::take_fail_sync(f.io_handle()) {
+                return Err(StoreError::io(
+                    &f.path,
+                    std::io::Error::from_raw_os_error(5),
+                ));
+            }
+        }
+        let handles: Vec<_> = files.iter().map(|f| f.io_handle()).collect();
+        if let Some(res) = crate::bulk_io::sync_data_batch(&handles) {
+            return match files.iter().zip(res).find(|(_, r)| *r != 0) {
+                Some((f, r)) => Err(StoreError::io(
+                    &f.path,
+                    std::io::Error::from_raw_os_error(-r),
+                )),
+                None => Ok(()),
+            };
+        }
+        for f in files {
+            f.read_file
+                .sync_data()
+                .map_err(|e| StoreError::io(&f.path, e))?;
+        }
+        Ok(())
+    }
+
     /// Persist HWM / trailer and `sync_data`.
     ///
     /// Skips entirely when no payload write has occurred since the last

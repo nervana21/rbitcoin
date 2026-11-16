@@ -4006,15 +4006,24 @@ impl TxTable {
     }
 
     fn sync_class_a_stems(&self) -> Result<(), StoreError> {
-        self.body.sync_data_only()?;
-        self.seqsigwit.sync_data_only()?;
-        self.spent.sync_data_only()?;
-        self.create_loc.sync_data_only()?;
-        self.seqsigwit_loc.sync_data_only()?;
-        self.txids.sync_data_only()?;
-        self.txstat.sync_data_only()?;
-        self.input.sync_data_only()?;
-        Ok(())
+        crate::file::TableFile::sync_data_all(&[
+            &self.body.body,
+            &self.seqsigwit.body,
+            &self.spent.body,
+            &self.create_loc.loc,
+            &self.create_loc.ovf,
+            &self.create_loc.off,
+            &self.seqsigwit_loc.loc,
+            &self.seqsigwit_loc.ovf,
+            &self.seqsigwit_loc.off,
+            &self.txids.file,
+            &self.txstat.body,
+            &self.txstat.ovf,
+            &self.txstat.blk,
+            &self.input.loc,
+            &self.input.off,
+            &self.input.body,
+        ])
     }
 
     pub fn flush_async(&self) -> Result<(), StoreError> {

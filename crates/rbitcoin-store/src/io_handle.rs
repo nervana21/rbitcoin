@@ -82,6 +82,28 @@ impl IoHandle {
         }
     }
 
+    /// `File::sync_data` on the borrowed handle: `fdatasync` on Linux,
+    /// `F_FULLFSYNC` on macOS, `FlushFileBuffers` on Windows. Returns 0 or
+    /// negated errno.
+    pub fn sync_data(self) -> i32 {
+        #[cfg(unix)]
+        // SAFETY: the caller keeps the fd open; `ManuallyDrop` never closes it.
+        let file = std::mem::ManuallyDrop::new(unsafe {
+            <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(self.fd)
+        });
+        #[cfg(windows)]
+        // SAFETY: the caller keeps the handle open; `ManuallyDrop` never closes it.
+        let file = std::mem::ManuallyDrop::new(unsafe {
+            <std::fs::File as std::os::windows::io::FromRawHandle>::from_raw_handle(
+                self.handle as _,
+            )
+        });
+        match file.sync_data() {
+            Ok(()) => 0,
+            Err(e) => -e.raw_os_error().unwrap_or(5),
+        }
+    }
+
     /// One-shot positional write. Returns bytes transferred or negated errno.
     pub fn pwrite(self, offset: u64, buf: &[u8]) -> i32 {
         if buf.is_empty() {
@@ -404,6 +426,38 @@ pub(crate) fn take_fail_sync(handle: IoHandle) -> bool {
         slots.swap_remove(i);
     }
     true
+}
+
+/// Watched fds, and whether one submitted sync batch held all of them.
+#[cfg(debug_assertions)]
+static SYNC_BATCH_WATCH: std::sync::Mutex<Option<(Vec<IoHandle>, bool)>> =
+    std::sync::Mutex::new(None);
+
+/// Watch for one `sync_data` batch that submits every fd in `handles`
+/// together. [`take_sync_batch_seen`] reports it.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn watch_sync_batch(handles: Vec<IoHandle>) {
+    *SYNC_BATCH_WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Some((handles, false));
+}
+
+/// Stop watching. True when one batch held every watched fd.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn take_sync_batch_seen() -> bool {
+    SYNC_BATCH_WATCH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .is_some_and(|(_, seen)| seen)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn note_sync_batch(batch: &[IoHandle]) {
+    let mut watch = SYNC_BATCH_WATCH.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((handles, seen)) = watch.as_mut() {
+        *seen |= handles.iter().all(|h| batch.contains(h));
+    }
 }
 
 #[cfg(debug_assertions)]

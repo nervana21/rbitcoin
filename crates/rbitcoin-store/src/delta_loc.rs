@@ -275,13 +275,6 @@ pub struct DeltaLoc {
 }
 
 impl DeltaLoc {
-    /// Device barrier for the locator, overflow, and checkpoint files.
-    pub fn sync_data_only(&self) -> Result<(), StoreError> {
-        self.loc.sync_data_only()?;
-        self.ovf.sync_data_only()?;
-        self.off.sync_data_only()
-    }
-
     pub fn create(dir: &Path, stem: &str) -> Result<Self, StoreError> {
         let loc = create_loc_file(&dir.join(format!("{stem}.loc")), TableKind::DeltaLoc)?;
         let ovf = create_loc_file(&dir.join(format!("{stem}.loc.ovf")), TableKind::DeltaLoc)?;

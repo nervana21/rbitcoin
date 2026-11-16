@@ -7,7 +7,9 @@ Fixed
   power cut could leave the tip, a strong bit, or a block's transaction
   range pointing at bytes that never reached the disk. The node then
   refused to start, rejected the next valid block, or wedged on one block
-  until the store was wiped.
+  until the store was wiped. Those syncs go to the configured bulk-IO
+  backend (io_uring, the IO pool, or IOCP) together, so they overlap
+  instead of queuing.
 - **An unpublished archive tail is cut on open.** A body header that fell
   short of its locator refused startup ("body header short of locator"),
   and a header that landed without its rows refused ("overflow missing")

@@ -72,13 +72,6 @@ pub struct CreateLoc {
 }
 
 impl CreateLoc {
-    /// Device barrier for the locator, overflow, and checkpoint files.
-    pub fn sync_data_only(&self) -> Result<(), StoreError> {
-        self.loc.sync_data_only()?;
-        self.ovf.sync_data_only()?;
-        self.off.sync_data_only()
-    }
-
     pub fn create(dir: &Path) -> Result<Self, StoreError> {
         Ok(Self {
             loc: create_table_file(&dir.join("create.loc"), TableKind::DeltaLoc)?,

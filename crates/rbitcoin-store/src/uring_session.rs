@@ -517,6 +517,44 @@ impl UringSession {
         r
     }
 
+    /// Push a `sync_data` of `fd` (datasync `IORING_OP_FSYNC` on io_uring).
+    /// No buffer; the caller keeps `fd` open until the CQE is harvested.
+    pub fn push_sync_data(
+        &mut self,
+        fd: impl Into<IoHandle>,
+        user_data: u64,
+    ) -> Result<(), StoreError> {
+        self.check_live()?;
+        if self.pending.len() >= self.entries as usize {
+            return Err(StoreError::BudgetFull("io_session SQ (in_flight cap)"));
+        }
+        self.pending.insert(user_data)?;
+        let handle = fd.into();
+        let r = match &mut self.backend {
+            #[cfg(target_os = "linux")]
+            SessionBackend::Uring(ring) => {
+                use io_uring::{opcode, types};
+                let sqe = opcode::Fsync::new(types::Fd(handle.as_raw_fd()))
+                    .flags(types::FsyncFlags::DATASYNC)
+                    .build()
+                    .user_data(user_data);
+                // SAFETY: the op holds no buffer.
+                if unsafe { ring.submission().push(&sqe) }.is_err() {
+                    Err(StoreError::BudgetFull("io_uring SQ"))
+                } else {
+                    Ok(())
+                }
+            }
+            SessionBackend::Pool(pool) => pool.push_sync(handle, user_data),
+            #[cfg(windows)]
+            SessionBackend::Iocp(eng) => eng.push_sync(handle, user_data),
+        };
+        if r.is_err() {
+            self.rollback_pending(user_data);
+        }
+        r
+    }
+
     pub fn sync_submission(&mut self) {
         #[cfg(target_os = "linux")]
         if let SessionBackend::Uring(ring) = &mut self.backend {
@@ -1247,6 +1285,8 @@ pub const KIND_SP_PARENT: u8 = 14;
 pub const KIND_MPHF_G: u8 = 15;
 /// Block index build machine (filters + tweaks): every stage's reads.
 pub const KIND_INDEX_BUILD: u8 = 16;
+/// Batched `sync_data` ([`crate::bulk_io::sync_data_batch`]).
+pub const KIND_BULK_FSYNC: u8 = 17;
 
 /// Pack `(kind, epoch, slot)` into `user_data`.
 ///

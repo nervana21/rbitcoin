@@ -90,12 +90,6 @@ impl Input {
         Ok(())
     }
 
-    pub fn sync_data_only(&self) -> Result<(), StoreError> {
-        self.loc.sync_data_only()?;
-        self.off.sync_data_only()?;
-        self.body.sync_data_only()
-    }
-
     #[cfg(debug_assertions)]
     pub fn pending_sync(&self) -> bool {
         self.loc.pending_sync() || self.off.pending_sync() || self.body.pending_sync()

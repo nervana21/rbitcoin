@@ -1255,26 +1255,7 @@ fn failed_read_in_tip_window_shrinks_nothing_but_a_torn_record_does() {
 /// the dirty pages, so every later barrier refuses until a restart.
 #[test]
 fn class_a_sync_failure_stops_the_class_c_commit() {
-    type Pick = fn(&Store) -> rbitcoin_store::io_handle::IoHandle;
-    let class_a: [(&str, Pick); 16] = [
-        ("txout.body", |s| s.txs.body.body.io_handle()),
-        ("seqsigwit.body", |s| s.txs.seqsigwit.body.io_handle()),
-        ("spent.body", |s| s.txs.spent.body.io_handle()),
-        ("create.loc", |s| s.txs.create_loc.loc.io_handle()),
-        ("create.loc.ovf", |s| s.txs.create_loc.ovf.io_handle()),
-        ("create.off", |s| s.txs.create_loc.off.io_handle()),
-        ("seqsigwit.loc", |s| s.txs.seqsigwit_loc.loc.io_handle()),
-        ("seqsigwit.loc.ovf", |s| s.txs.seqsigwit_loc.ovf.io_handle()),
-        ("seqsigwit.off", |s| s.txs.seqsigwit_loc.off.io_handle()),
-        ("txid.body", |s| s.txs.txids.file.io_handle()),
-        ("txstat.body", |s| s.txs.txstat.body.io_handle()),
-        ("txstat.ovf", |s| s.txs.txstat.ovf.io_handle()),
-        ("txstat.blk", |s| s.txs.txstat.blk.io_handle()),
-        ("input.loc", |s| s.txs.input.loc.io_handle()),
-        ("input.off", |s| s.txs.input.off.io_handle()),
-        ("input.body", |s| s.txs.input.body.io_handle()),
-    ];
-    for (name, pick) in class_a {
+    for (name, pick) in CLASS_A_FILES {
         let dir = tmp();
         let s = Store::create_tiny(&dir).unwrap();
         let write = rbitcoin_store::ClassCWrite::for_test();
@@ -1301,6 +1282,52 @@ fn class_a_sync_failure_stops_the_class_c_commit() {
         assert_eq!(s.confirmed.tip_height(), Some(Height(0)), "{name}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+type ClassAPick = fn(&Store) -> rbitcoin_store::io_handle::IoHandle;
+
+/// Every Class A file the barrier syncs.
+const CLASS_A_FILES: [(&str, ClassAPick); 16] = [
+    ("txout.body", |s| s.txs.body.body.io_handle()),
+    ("seqsigwit.body", |s| s.txs.seqsigwit.body.io_handle()),
+    ("spent.body", |s| s.txs.spent.body.io_handle()),
+    ("create.loc", |s| s.txs.create_loc.loc.io_handle()),
+    ("create.loc.ovf", |s| s.txs.create_loc.ovf.io_handle()),
+    ("create.off", |s| s.txs.create_loc.off.io_handle()),
+    ("seqsigwit.loc", |s| s.txs.seqsigwit_loc.loc.io_handle()),
+    ("seqsigwit.loc.ovf", |s| s.txs.seqsigwit_loc.ovf.io_handle()),
+    ("seqsigwit.off", |s| s.txs.seqsigwit_loc.off.io_handle()),
+    ("txid.body", |s| s.txs.txids.file.io_handle()),
+    ("txstat.body", |s| s.txs.txstat.body.io_handle()),
+    ("txstat.ovf", |s| s.txs.txstat.ovf.io_handle()),
+    ("txstat.blk", |s| s.txs.txstat.blk.io_handle()),
+    ("input.loc", |s| s.txs.input.loc.io_handle()),
+    ("input.off", |s| s.txs.input.off.io_handle()),
+    ("input.body", |s| s.txs.input.body.io_handle()),
+];
+
+/// The barrier puts every Class A `sync_data` on the configured bulk-IO
+/// session at once (io_uring, the pool, or IOCP). In flight together, the
+/// filesystem can share journal commits and device cache flushes between
+/// them. One at a time, a Tip-mode block waits for sixteen in a row.
+#[test]
+fn class_a_barrier_submits_its_syncs_in_one_batch() {
+    if !rbitcoin_store::bulk_io::io_uring_enabled() {
+        eprintln!("skip: no bulk-IO session (RBITCOIN_IO=pread or macOS default)");
+        return;
+    }
+    let dir = tmp();
+    let s = Store::create_tiny(&dir).unwrap();
+    let write = rbitcoin_store::ClassCWrite::for_test();
+    connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    rbitcoin_store::io_handle::watch_sync_batch(
+        CLASS_A_FILES.iter().map(|(_, pick)| pick(&s)).collect(),
+    );
+    let flushed = s.flush_class_c_tip();
+    let seen = rbitcoin_store::io_handle::take_sync_batch_seen();
+    flushed.unwrap();
+    assert!(seen, "the Class A syncs were not submitted together");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn store_image(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
@@ -1419,6 +1446,105 @@ fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
             Some(Height(1)),
             "dropped {dropped:?}"
         );
+    }
+    let _ = std::fs::remove_dir_all(&img);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Power loss during the Class C flush, after the Class A barrier.
+///
+/// `header_txs.first`, `header_txs.count`, `confirmed[]` and the strong
+/// bits are separate files flushed one after another. Each one's new block
+/// row may land, not land, or land as a length header over zeroed rows.
+/// Every mix must reopen at tip 0 or 1, keep the archive, and seal the next
+/// blocks.
+#[test]
+fn every_class_c_subset_after_the_barrier_reopens_and_seals() {
+    let dir = tmp();
+    let s = Store::create_tiny(&dir).unwrap();
+    let write = rbitcoin_store::ClassCWrite::for_test();
+    let (genesis, parent) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(0)));
+    s.txs.head.flush().unwrap();
+    let sealed = store_image(&dir);
+    let (one, one_hash) = connect_coinbase(&s, &write, 1, genesis, parent);
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
+    drop(s);
+    let committed = store_image(&dir);
+    let class_c = [
+        "confirmed.body",
+        "header_txs_first.body",
+        "header_txs_count.body",
+        "strong_tx.body",
+        "tip_seal",
+    ];
+    let changed: Vec<&PathBuf> = committed
+        .iter()
+        .filter(|(rel, bytes)| sealed.get(*rel) != Some(*bytes))
+        .filter(|(rel, _)| class_c.iter().any(|c| rel.ends_with(c)))
+        .map(|(rel, _)| rel)
+        .collect();
+    assert_eq!(
+        changed.len(),
+        class_c.len(),
+        "Class C files written: {changed:?}"
+    );
+    let n = changed.len();
+    let all = (1u32 << n) - 1;
+    let header = rbitcoin_store::file::FILE_HEADER_LEN;
+    let img = tmp();
+    for mask in 0..=all {
+        for header_only in std::iter::once(None).chain((0..n).map(Some)) {
+            if header_only.is_some_and(|b| mask & (1 << b) != 0) {
+                continue;
+            }
+            let mut image = committed.clone();
+            let mut torn = Vec::new();
+            for (bit, rel) in changed.iter().enumerate() {
+                let old = sealed.get(*rel).cloned().unwrap_or_default();
+                if header_only == Some(bit) {
+                    torn.push(format!("{} rows", rel.display()));
+                    let new = &committed[*rel];
+                    let mut bytes = vec![0u8; new.len()];
+                    let keep = old.len().min(new.len());
+                    bytes[..keep].copy_from_slice(&old[..keep]);
+                    let head = header.min(new.len());
+                    bytes[..head].copy_from_slice(&new[..head]);
+                    image.insert((*rel).clone(), bytes);
+                } else if mask & (1 << bit) != 0 {
+                    torn.push(rel.display().to_string());
+                    image.insert((*rel).clone(), old);
+                }
+            }
+            write_image(&img, &image);
+            let s = Store::open_tiny(&img)
+                .unwrap_or_else(|e| panic!("lost {torn:?}: open failed: {e}"));
+            let tip = s.confirmed.tip_height();
+            assert!(
+                tip == Some(Height(0)) || tip == Some(Height(1)),
+                "lost {torn:?}: tip {tip:?}"
+            );
+            assert!(s.txs.count() >= 2, "lost {torn:?}: synced create cut");
+            let (two_prev, two_parent) = if tip == Some(Height(0)) {
+                let (fk, hash) = connect_coinbase(&s, &write, 1, genesis, parent);
+                assert_eq!(
+                    s.flush_class_c_tip()
+                        .unwrap_or_else(|e| panic!("lost {torn:?}: reseal 1: {e}")),
+                    Some(Height(1)),
+                    "lost {torn:?}"
+                );
+                (fk, hash)
+            } else {
+                (one, one_hash)
+            };
+            connect_coinbase(&s, &write, 2, two_prev, two_parent);
+            assert_eq!(
+                s.flush_class_c_tip()
+                    .unwrap_or_else(|e| panic!("lost {torn:?}: seal 2: {e}")),
+                Some(Height(2)),
+                "lost {torn:?}"
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&img);
     let _ = std::fs::remove_dir_all(&dir);
