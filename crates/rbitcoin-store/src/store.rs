@@ -565,12 +565,9 @@ impl Store {
         if layout.is_split() {
             refuse_cold_index_dirs(&path, &seqsigwit_dir)?;
         }
-        let txs = TxTable::open_seqsigwit(
-            &path,
-            &seqsigwit_dir,
-            layout.open_opts(),
-            committed_create_count(&header_txs)?,
-        )?;
+        let committed =
+            committed_create_count(&header_txs)?.max(crate::integrity::read_pad_target(&path)?);
+        let txs = TxTable::open_seqsigwit(&path, &seqsigwit_dir, layout.open_opts(), committed)?;
         if layout.is_split() {
             write_seqsigwit_reloc(&path)?;
         }
@@ -597,7 +594,7 @@ impl Store {
             cold_path,
             head_scale: layout.head_scale,
         };
-        store.drop_confirmed_past_creates()?;
+        store.drop_confirmed_past_creates(committed)?;
         store.rebuild_mtp_ring()?;
         Ok(store)
     }

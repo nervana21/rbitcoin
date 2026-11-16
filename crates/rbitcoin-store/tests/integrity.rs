@@ -962,8 +962,12 @@ fn truncate_across_window_does_not_keep_a_sealed_tip() {
     write_hwm(&dir.join("create.loc"), short);
 
     let s = Store::open_tiny(&dir).expect("a mid-truncate crash opens");
-    assert_eq!(s.txs.count(), 1023, "open kept the short loc prefix");
     assert_eq!(s.confirmed.tip_height(), Some(Height(0)));
+    // The cut creates 1024 and 1025 are padded, not handed to the next block.
+    assert_eq!(s.txs.count(), 1025);
+    assert_ne!(s.txs.body_txid(Fk(1023)).unwrap()[..24], [0xff; 24]);
+    assert_eq!(s.txs.body_txid(Fk(1024)).unwrap()[..24], [0xff; 24]);
+    assert!(!s.is_confirmed_strong(Fk(1024)).unwrap());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1463,12 +1467,12 @@ fn spend_commit_waits_for_the_spender_archive_sync() {
 
 /// Class C sealed height 1, then its body headers fell back to height 0.
 ///
-/// The barrier rules this out for this binary, so the image was torn by an
-/// older one. Its committed rows name create 2: cutting it would let a
-/// later transaction reuse that number under stale spends and postings.
-/// Open refuses, as before the barrier.
+/// The barrier rules this out for this binary, so an older one tore it.
+/// Open shrinks the tip to the creates that remain and pads the cut number
+/// with a tombstone: nothing reuses create 2, so a stale spend or posting
+/// that names it never counts. The next block takes create 3 and seals.
 #[test]
-fn body_header_short_of_a_committed_create_still_refuses() {
+fn body_header_short_of_a_committed_create_shrinks_and_pads() {
     let dir = tmp();
     let s = Store::create_tiny(&dir).unwrap();
     let write = rbitcoin_store::ClassCWrite::for_test();
@@ -1477,20 +1481,43 @@ fn body_header_short_of_a_committed_create_still_refuses() {
     let tx_end = on_disk_hwm(&dir.join("txout.body"));
     let sp_end = on_disk_hwm(&dir.join("spent.body"));
     let in_end = on_disk_hwm(&dir.join("seqsigwit.body"));
-    connect_coinbase(&s, &write, 1, genesis, parent);
+    let (h1, _) = connect_coinbase(&s, &write, 1, genesis, parent);
     assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
     drop(s);
     write_hwm(&dir.join("txout.body"), tx_end);
     write_hwm(&dir.join("spent.body"), sp_end);
     write_hwm(&dir.join("seqsigwit.body"), in_end);
-    match Store::open_tiny(&dir) {
-        Err(rbitcoin_store::StoreError::Corrupt(m)) if m.contains("body header short") => {}
-        Err(e) => panic!("open returned {e}"),
-        Ok(s) => panic!(
-            "open cut committed creates: count {} tip {:?}",
-            s.txs.count(),
-            s.confirmed.tip_height()
-        ),
-    }
+
+    let s = Store::open_tiny(&dir).unwrap();
+    assert_eq!(s.confirmed.tip_height(), Some(Height(0)));
+    assert_eq!(s.txs.count(), 2, "the cut number is padded, not reused");
+    assert!(!s.is_confirmed_strong(Fk(2)).unwrap());
+    assert!(s.header_txs.get_list(h1).unwrap().is_none());
+    assert!(!dir.join("class_a.pad").exists());
+    let (h1b, _) = connect_coinbase(&s, &write, 1, genesis, parent);
+    assert_eq!(s.header_txs.get_list(h1b).unwrap().unwrap(), vec![Fk(3)]);
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
+    drop(s);
+    let s = Store::open_tiny(&dir).unwrap();
+    assert_eq!(s.confirmed.tip_height(), Some(Height(1)));
+    assert_eq!(s.txs.count(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A crash after the pad target is recorded and the ranges are cleared,
+/// before the tombstones land. The next open still pads to the old count.
+#[test]
+fn pad_target_survives_a_crash_before_the_tombstones() {
+    let dir = tmp();
+    let s = Store::create_tiny(&dir).unwrap();
+    let write = rbitcoin_store::ClassCWrite::for_test();
+    connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    s.flush_class_c_tip().unwrap();
+    drop(s);
+    std::fs::write(dir.join("class_a.pad"), 3u64.to_le_bytes()).unwrap();
+    let s = Store::open_tiny(&dir).unwrap();
+    assert_eq!(s.txs.count(), 3);
+    assert_eq!(s.confirmed.tip_height(), Some(Height(0)));
+    assert!(!dir.join("class_a.pad").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -679,38 +679,33 @@ impl Store {
         Ok(self.class_a_confirmed_cut(covered)?.is_none())
     }
 
-    /// After open truncates Class A, drop confirmed heights whose tx range
-    /// ends past that count. The header clear is flushed before the tip
-    /// shrink. A crash after that clear still shrinks: the strong bit past
-    /// the count is set and the range is already gone. Trailing nulls, a
-    /// header-only tip, and a Class C fixture are not this drop.
-    pub(crate) fn drop_confirmed_past_creates(&self) -> Result<(), StoreError> {
+    /// After open fits Class A, drop confirmed heights it no longer covers.
+    ///
+    /// `committed` is the highest create a durable Class C row (or an
+    /// unfinished pad) names. For writes by this binary the fit never cuts
+    /// below it. An older binary could: then the tip shrinks to the creates
+    /// that remain, and the cut numbers `(covered, committed]` are padded
+    /// with tombstones that are never strong, so a stale spend or posting
+    /// that names one never counts and no later transaction takes it.
+    ///
+    /// Order: tip shrink, pad target ([`CLASS_A_PAD_NAME`]), `header_txs`
+    /// clear, tombstones, Class A sync, then the target is removed. A crash
+    /// at any step reopens with the same target and finishes it. Trailing
+    /// nulls, a header-only tip, and a Class C fixture keep the old shrink.
+    pub(crate) fn drop_confirmed_past_creates(&self, committed: u64) -> Result<(), StoreError> {
         let covered = self.txs.count();
+        let archive = covered != 0 || self.txs.bodies_allocated_past_header();
+        if committed > covered && archive {
+            return self.pad_cut_creates(covered, committed);
+        }
         let Some(tip) = self.confirmed.tip_height() else {
             return Ok(());
         };
         let write = crate::array_table::ClassCWrite::new();
         let mut report = TipRevalidateReport::default();
         if let Some(bad) = self.class_a_confirmed_cut(covered)? {
-            let kept = bad.checked_sub(1);
-            match self.header_tx_end(Height(bad))? {
-                Some(end) if end > covered => {
-                    if covered == 0 && !self.txs.bodies_allocated_past_header() {
-                        return Ok(());
-                    }
-                    let mut fks = Vec::new();
-                    for h in bad..=tip.0 {
-                        if let Some(fk) = self.confirmed.get(Height(h))? {
-                            fks.push(fk);
-                        }
-                    }
-                    self.clear_header_fks(&write, &fks)?;
-                    self.shrink_tip_to(&write, kept, &mut report)?;
-                }
-                None if self.strong_past_covered(covered)? => {
-                    self.shrink_tip_to(&write, kept, &mut report)?;
-                }
-                _ => {}
+            if self.header_tx_end(Height(bad))?.is_none() && self.strong_past_covered(covered)? {
+                self.shrink_tip_to(&write, bad.checked_sub(1), &mut report)?;
             }
             return Ok(());
         }
@@ -723,22 +718,47 @@ impl Store {
         self.shrink_tip_to(&write, None, &mut report)
     }
 
+    fn pad_cut_creates(&self, covered: u64, committed: u64) -> Result<(), StoreError> {
+        rbitcoin_log::warn!(
+            "store: Class A ends at create {covered} and committed rows name {committed} \
+             (torn by an older binary) — shrink the tip and pad the cut numbers"
+        );
+        let write = crate::array_table::ClassCWrite::new();
+        let mut report = TipRevalidateReport::default();
+        if let Some(bad) = self.class_a_confirmed_cut(covered)? {
+            self.shrink_tip_to(&write, bad.checked_sub(1), &mut report)?;
+        }
+        let pad = self.path().join(CLASS_A_PAD_NAME);
+        crate::file::write_synced_tmp_rename(&pad, &committed.to_le_bytes())?;
+        let n = self.header_txs.first.len().min(self.header_txs.count.len());
+        let mut cleared = false;
+        for i in 0..n {
+            let count = self.header_txs.count.get(i)?;
+            let first = self.header_txs.first.get(i)?;
+            if count == 0 || first == 0 || first.saturating_add(count) - 1 <= covered {
+                continue;
+            }
+            if let Some(fk) = Fk::new(i.saturating_add(1)) {
+                cleared |= self.header_txs.clear_body(&write, fk)?;
+            }
+        }
+        if cleared {
+            self.header_txs.flush()?;
+        }
+        let tombstones: Vec<_> = (covered + 1..=committed).map(tombstone_create).collect();
+        for chunk in tombstones.chunks(4096) {
+            self.txs.put_full_batch_indexed(chunk, true)?;
+        }
+        self.txs.sync_class_a_data()?;
+        std::fs::remove_file(&pad).map_err(|e| StoreError::io(&pad, e))?;
+        crate::file::fsync_parent_dir(self.path()).map_err(|e| StoreError::io(self.path(), e))
+    }
+
     fn strong_past_covered(&self, covered: u64) -> Result<bool, StoreError> {
         let Some(fk) = Fk::new(covered.saturating_add(1)) else {
             return Ok(false);
         };
         self.strong_tx.is_strong(fk)
-    }
-
-    fn clear_header_fks(
-        &self,
-        write: &crate::array_table::ClassCWrite,
-        fks: &[Fk],
-    ) -> Result<(), StoreError> {
-        for fk in fks {
-            let _ = self.header_txs.clear_body(write, *fk)?;
-        }
-        self.header_txs.flush()
     }
 
     /// Height a spend checkpoint may call durable, or `None` when no create is.
@@ -855,4 +875,45 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// Sidecar in the hot store: the create count an unfinished pad must reach.
+pub const CLASS_A_PAD_NAME: &str = "class_a.pad";
+
+/// Pad target left by a crash during [`Store::drop_confirmed_past_creates`].
+pub(crate) fn read_pad_target(dir: &std::path::Path) -> Result<u64, StoreError> {
+    let path = dir.join(CLASS_A_PAD_NAME);
+    match std::fs::read(&path) {
+        Ok(b) => b
+            .try_into()
+            .map(u64::from_le_bytes)
+            .map_err(|_| StoreError::Corrupt("class_a.pad size")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(StoreError::io(&path, e)),
+    }
+}
+
+/// A create that holds number `id` after an older binary's cut. Its txid is
+/// reserved and unique, its one output is a zero-value `OP_RETURN`, and it is
+/// never strong.
+fn tombstone_create(
+    id: u64,
+) -> (
+    crate::tx_table::TxRecord,
+    Vec<crate::tx_table::InputRecord>,
+    Vec<crate::tx_table::OutputRecord>,
+) {
+    let mut txid = [0xffu8; 32];
+    txid[24..].copy_from_slice(&id.to_le_bytes());
+    (
+        crate::tx_table::TxRecord {
+            txid,
+            version: 0,
+            locktime: 0,
+            input_count: 1,
+            output_count: 1,
+        },
+        vec![crate::tx_table::InputRecord::coinbase(0, vec![], vec![])],
+        vec![crate::tx_table::OutputRecord::unspent(0, vec![0x6a])],
+    )
 }

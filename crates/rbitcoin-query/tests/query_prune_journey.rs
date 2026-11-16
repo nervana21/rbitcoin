@@ -447,7 +447,8 @@ fn open_finishes_cut_when_locator_is_already_zero() {
 }
 
 /// The create locator landed and the witness locator stopped short. Open
-/// drops that tail, then copies the keep window from the rows that remain.
+/// drops that tail, pads the cut numbers with tombstones, then copies the
+/// keep window from the rows that remain.
 #[test]
 fn open_truncates_a_short_witness_locator_before_the_cut() {
     let (dir, q) = temp_query("prune-loc-prefix");
@@ -463,8 +464,10 @@ fn open_truncates_a_short_witness_locator_before_the_cut() {
     q.store().sync_spend_durable(19).unwrap();
     drop(q);
     let q = Query::open_or_create_tiny(dir.path()).unwrap();
-    assert_eq!(q.store().txs.count(), kept);
     assert_eq!(q.tip_height(), Some(Height(11)));
+    assert_eq!(q.store().txs.count(), 20, "cut numbers are padded");
+    let tomb = q.store().txs.body_txid(Fk(kept + 1)).unwrap();
+    assert_eq!(tomb[..24], [0xff; 24]);
     assert_witness_stem_cut(&q);
     let block = q.reconstruct_block_at_height(Height(11)).unwrap();
     assert_eq!(

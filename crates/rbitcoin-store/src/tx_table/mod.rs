@@ -961,10 +961,10 @@ pub fn class_a_skew_assert_aligned(
 
 #[doc(hidden)]
 ///
-/// `committed` is the highest create a durable Class C row names. The body
-/// headers may cut a tail above it. Below it the image was torn by a binary
-/// without the Class A barrier: open refuses rather than free numbers that
-/// spends and postings still name.
+/// `committed` is the highest create a durable Class C row names. Past it,
+/// creates that do not decode are the torn tail. A cut below it can only
+/// come from a binary without the Class A barrier; the store pads those
+/// numbers afterwards ([`crate::store::Store::open_layout`]).
 pub fn repair_class_a_count_skew(
     stems: ClassASkewStems<'_>,
     prune_seqsigwit_mode: bool,
@@ -993,11 +993,6 @@ pub fn repair_class_a_count_skew(
         stems.seqsigwit_loc.truncate_to_count(stem)?;
     }
     let covered = body_headers_cover(&stems, stem, prune_seqsigwit_mode)?;
-    if covered < stem && covered < committed {
-        return Err(StoreError::Corrupt(
-            "invariant: body header short of locator",
-        ));
-    }
     // The short-input probe reads the witness row past the input count. Run
     // it only inside the covered prefix, where that row is on disk.
     let short_input = if stems.input.count() < covered {
