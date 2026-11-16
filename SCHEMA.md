@@ -87,13 +87,13 @@ index refuses flat *.idx.meta; place files under store/{stem}.idx/ (meta + NNNNN
 index refuses Shared (file) scripthash.body; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 index refuses pack8 Paged (mode 10) scripthash heads; wipe store/scripthash* then restart (Class A kept; SH rematerializes with --sh-index)
 ```  
-Table file headers **22–29** remain `schema_file_openable`. A 22 binary refuses 23 `meta`.
+Table file headers **22–30** remain `schema_file_openable`. A 22 binary refuses 23 `meta`.
 **22→23 open:** occupied Class A rewrites `create.loc.ovf` 12 B rows (`fk:u64` + two u16) to 16 B (`fk:u64` + two u32) and `store/meta` to 23. Empty 22 rewrites `meta`. A 22 binary refuses 23 `meta`. Spent vin stays u16 (stripped input ≥ ~41 B ⇒ ≲24k vins in a 1 MB block; widening would bump the 8 B spent slot).
-**23→24 open** (schema 24/25 binaries): rewrote `header.body` 88 B rows to 96 B. This binary does not expand. An 88 B body stays 88 B and `meta` rewrites to 29.
+**23→24 open** (schema 24/25 binaries): rewrote `header.body` 88 B rows to 96 B. This binary does not expand. An 88 B body stays 88 B and `meta` rewrites to 30.
 **24/25→26 open:** rewrite each 96 B `header.body` row to 88 B (drop trailing `size`/`weight`) via `header.body.grow` then rename; rewrite `meta` to 26. A body that is already 88 B is unchanged. A 25 binary refuses 26 `meta`. Crash with leftover `.grow` discards it and retries.
 **29→30 open:** rewrite `store/meta` to 30 and sync its directory. If `spend.pages.commit` exists, fold every committed page into `spent.body`, sync it, remove the page-log files, then create empty `spent.delta`, `spent.delta.idx`, and `spent.delta.commit`. No Class A rewrite. A 29 binary refuses 30 `meta`.
-**27→28 open:** rewrite `store/meta` to 28 and sync its directory. No table rewrite. A 27 binary refuses 28 `meta`. That binary does not read `spend.pages`, so leaving it on 27 would let it write spends under a live log. This binary continues from 28 to 29.
-**26→27 open** (schema 27 binaries): rewrote `store/meta` to 27. No table rewrite. A 26 binary refuses 27 `meta`. The sync lands before a witness stem cut, so a crash cannot leave schema 26 beside an empty witness locator. This binary continues from 27 to 29.
+**27→28 open:** rewrite `store/meta` to 28 and sync its directory. No table rewrite. A 27 binary refuses 28 `meta`. That binary does not read `spend.pages`, so leaving it on 27 would let it write spends under a live log. This binary continues from 28 to 30.
+**26→27 open** (schema 27 binaries): rewrote `store/meta` to 27. No table rewrite. A 26 binary refuses 27 `meta`. The sync lands before a witness stem cut, so a crash cannot leave schema 26 beside an empty witness locator. This binary continues from 27 to 30.
 **24→25 open:** rewrite `meta` to 25; create or zero-extend `txstat.body` to `create.loc` count. Do **not** rewrite `txout.body`. Unlink leftover `txfixed.body`. A 24 binary refuses 25 `meta`.
 **Endianness:** little-endian for all multi-byte integers.
 
@@ -104,8 +104,8 @@ Older versions and migration notes live in [`SCHEMA_HISTORY.md`](./SCHEMA_HISTOR
 ## Schema 17 freeze
 
 Class A shape settled here at schema 17 and is still the live layout under
-the `SCHEMA_VERSION` at the top of this file (29). Schemas 18–29 already
-shipped. Meta 22–29 is what this binary opens (rules above). Earlier
+the `SCHEMA_VERSION` at the top of this file (30). Schemas 18–30 already
+shipped. Meta 22–30 is what this binary opens (rules above). Earlier
 layouts are history in
 [`SCHEMA_HISTORY.md`](./SCHEMA_HISTORY.md). A byte-incompatible change bumps
 from that live constant
@@ -291,7 +291,7 @@ and cuts it). `txout`, `txstat`, `input`, block filters, and tweaks are not prun
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic `RBT1` |
-| 4 | 2 | Schema version (u16) — live **29** (`SCHEMA_VERSION`). Occupied files keep the version they were written; **22–29** remain `schema_file_openable` |
+| 4 | 2 | Schema version (u16) — live **30** (`SCHEMA_VERSION`). Occupied files keep the version they were written; **22–30** remain `schema_file_openable` |
 | 6 | 2 | Table kind (u16) |
 | 8 | 8 | Logical length (bytes), including this header |
 
@@ -614,7 +614,7 @@ the new `meta` or an unknown kind). See [Schema 17 freeze](#schema-17-freeze).
 Best-chain spentness also requires `is_confirmed_strong(spender)` (annotations may outlive reorgs).
 A Class A append fills the slot for a spend in the same write. When the write holds more than one spender of a vout (a double spend that write rejects), it names the first in chain order, the lowest fk. A rejected write keeps that append for the retry.
 
-Schema 30 stores historical spend slots as cumulative per-page deltas over `spent.body`. `spent.delta` is append-only: each record is `page_off:u64 | count:u16 | entries[count]{rel:u16, meta:[u8;8]}`, including explicit zeroes. `spent.delta.idx` is a dense directory: one 16-byte entry per page (`generation:u32 | offset:u64 | len:u32`). The latest entry is authoritative; readers never merge generations. A page with no entry reads `spent.body`. A checkpoint writes one cumulative record for every page it touched, syncs `spent.delta`, writes the directory entries, syncs `spent.delta.idx`, and renames `spent.delta.commit`. `spent_durable` advances only after that commit. A missing or short delta record refuses open. A slot not present in the delta falls through to `spent.body`; an explicit zero in the delta hides the body slot. Old records are garbage and are retired by compaction; they are not a read layer. The schema-29 `spend.pages` files are folded into `spent.body` once on open and then removed.
+Schema 30 stores historical spend slots as cumulative per-page deltas over `spent.body`. `spent.delta` is append-only: each record is `page_off:u64 | count:u16 | entries[count]{rel:u16, meta:[u8;8]}`, including explicit zeroes. `spent.delta.idx` is a dense directory: one 16-byte entry per page (`generation:u32 | offset:u64 | len:u32`). The latest entry is authoritative; readers never merge generations. A page with no entry reads `spent.body`. A checkpoint writes one cumulative record for every page it touched, syncs `spent.delta`, writes the directory entries, syncs `spent.delta.idx`, and renames `spent.delta.commit`. `spent_durable` advances only after that commit. A missing or short delta record refuses open. A slot not present in the delta falls through to `spent.body`; an explicit zero in the delta hides the body slot. Old records are garbage and are not a read layer. This slice leaves compaction to a follow-up; `docs/operator/storage.md` carries the live-record bound and the superseded-copy caveat. The schema-29 `spend.pages` files are folded into `spent.body` once on open and then removed.
 
 ### Multi-spender overflow (`spent.ovf`)
 

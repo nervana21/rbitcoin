@@ -664,7 +664,7 @@ fn read_slot(store: &std::path::Path, abs: u64) -> [u8; 8] {
 /// on `spent.body` stay the pre-spend image until the next checkpoint folds
 /// the generation the first one published.
 #[test]
-fn historical_page_stays_unwritten_until_spend_checkpoint() {
+fn historical_page_stays_unwritten_until_delta_checkpoint() {
     let (dir, q) = rbitcoin_query::testutil::tiny_query_labeled("spend-page-log");
     q.set_spend_index(true);
     let params = ChainParams::regtest();
@@ -1148,7 +1148,7 @@ fn checkpoint_append_above_snapshot_still_publishes() {
 }
 
 #[test]
-fn replay_folds_a_full_open_directory() {
+fn replay_keeps_a_full_open_directory_in_delta() {
     let (dir, q) = chain_at_height("spend-replay-cap", 1);
     let _ = std::fs::remove_file(q.store().path().join(rbitcoin_store::SPEND_DURABLE_NAME));
     // Null spender field, vin 1. `keep` retains a null field, and the body
@@ -1176,7 +1176,7 @@ fn replay_folds_a_full_open_directory() {
     }
     assert!(q.store().spend_checkpoint_early());
     rbitcoin_query::replay_spend_annotations(&q).unwrap();
-    assert_eq!(q.store().txs.spend_log_slot(4096), Some(slot));
+    assert_eq!(q.store().txs.spend_log_slot(4096).unwrap(), Some(slot));
     let _ = dir;
 }
 

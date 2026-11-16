@@ -454,18 +454,8 @@ pub fn keep_unspent_vout_subsequence<T>(
 type SpendFreezeProbe = fn(&SpenderTable, &crate::spend_delta::SpendPageLog);
 
 #[cfg(debug_assertions)]
-type SpendFoldProbe = fn();
-
-#[cfg(debug_assertions)]
-type SpendInstallProbe = fn();
-
-#[cfg(debug_assertions)]
 thread_local! {
     static SPEND_FREEZE_PROBE: std::cell::Cell<Option<SpendFreezeProbe>> =
-        const { std::cell::Cell::new(None) };
-    static SPEND_FOLD_PROBE: std::cell::Cell<Option<SpendFoldProbe>> =
-        const { std::cell::Cell::new(None) };
-    static SPEND_INSTALL_PROBE: std::cell::Cell<Option<SpendInstallProbe>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -1913,7 +1903,6 @@ impl Store {
         self.publish_open_spend_pages(tip, |meta| self.spend_slot_still_live(meta))?;
         self.txs.sync_replay_data()?;
         self.store_spend_marker(tip, tip, gen)?;
-        self.fold_sealed_spend_pages()?;
         Ok(t.elapsed().as_nanos() as u64)
     }
 
@@ -1983,7 +1972,7 @@ impl Store {
 
     /// Directory answer for one absolute spend slot, when the log serves it.
     #[doc(hidden)]
-    pub fn spend_directory_slot(&self, abs: u64) -> Option<[u8; 8]> {
+    pub fn spend_directory_slot(&self, abs: u64) -> Result<Option<[u8; 8]>, StoreError> {
         self.txs.spend_log_slot(abs)
     }
 
@@ -2032,71 +2021,19 @@ impl Store {
         SPEND_FREEZE_PROBE.with(|slot| slot.take())
     }
 
-    /// Run once inside the cooled-page body copy, while the spindle is held.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn arm_spend_fold_probe(probe: SpendFoldProbe) {
-        SPEND_FOLD_PROBE.with(|slot| slot.set(Some(probe)));
-    }
-
-    /// Drop a probe [`arm_spend_fold_probe`] has not consumed.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn disarm_spend_fold_probe() {
-        SPEND_FOLD_PROBE.with(|slot| slot.set(None));
-    }
-
-    #[cfg(debug_assertions)]
-    fn take_spend_fold_probe() -> Option<SpendFoldProbe> {
-        SPEND_FOLD_PROBE.with(|slot| slot.take())
-    }
-
-    /// Run once beside the checkpoint's generation-file unlink.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn arm_spend_install_probe(probe: SpendInstallProbe) {
-        SPEND_INSTALL_PROBE.with(|slot| slot.set(Some(probe)));
-    }
-
-    /// Drop a probe [`arm_spend_install_probe`] has not consumed.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn disarm_spend_install_probe() {
-        SPEND_INSTALL_PROBE.with(|slot| slot.set(None));
-    }
-
-    #[cfg(debug_assertions)]
-    fn take_spend_install_probe() -> Option<SpendInstallProbe> {
-        SPEND_INSTALL_PROBE.with(|slot| slot.take())
-    }
-
     fn publish_open_spend_pages(
         &self,
         height: u32,
         keep: impl FnMut(&[u8; 8]) -> Result<bool, StoreError>,
     ) -> Result<(), StoreError> {
-        // Swap the open pages into `frozen`, and wake an edge-cap waiter,
-        // before the cooled-page copy. Do not stamp the tip here: a disconnect
-        // below this checkpoint, and at or above the sealed generation, must
-        // still fold. Do not clone a snapshot. The callback freeze records the
-        // one compose publishes, after the copy. That freeze is a reuse, and
-        // does not notify, when this swap moved pages. An empty swap leaves
-        // `frozen` empty, so the callback freeze is a fresh swap: it resets
-        // the edge count and notifies.
-        self.txs.widen_for_checkpoint(height);
         let publish = &self.utxo_publish;
         let view = &self.utxo_view;
         let confirmed = &self.confirmed;
         let spenders = &self.spenders;
-        {
-            let _g = hold_view(publish, view);
-            self.txs.freeze_open_spend_pages();
-        }
-        self.fold_sealed_spend_pages()?;
         self.txs.prepare_open_spend_pages(
             height,
             keep,
-            |log, len| {
+            |log, _len| {
                 {
                     let _g = hold_view(publish, view);
                     #[cfg(debug_assertions)]
@@ -2106,7 +2043,6 @@ impl Store {
                     let tip = confirmed.tip_height().map(|h| h.0).unwrap_or(height);
                     log.cover_confirmed_tip(tip);
                     log.freeze_open();
-                    log.cover_published_len(len());
                 }
                 spenders.sync_data_only()?;
                 Ok(())
@@ -2115,43 +2051,7 @@ impl Store {
                 let _g = hold_view(publish, view);
                 Ok(confirmed.tip_height().map(|h| h.0).unwrap_or(height))
             },
-        )?;
-        self.install_prepared_spend_pages()
-    }
-
-    fn install_prepared_spend_pages(&self) -> Result<(), StoreError> {
-        // Readers and confirm wait on the view. List and unlink generation
-        // files after it drops, with the live set captured under it.
-        let live = {
-            let _g = hold_view(&self.utxo_publish, &self.utxo_view);
-            self.txs.install_open_spend_pages()
-        };
-        if let Some(live) = live {
-            #[cfg(debug_assertions)]
-            if let Some(probe) = Self::take_spend_install_probe() {
-                probe();
-            }
-            self.txs.unlink_spend_generations_if_synced(&live);
-        }
-        Ok(())
-    }
-
-    fn fold_sealed_spend_pages(&self) -> Result<(), StoreError> {
-        // Readers still see the committed image, so the copy does not take
-        // the utxo view. Drop the spindle before that view: disconnect takes
-        // the view and must not wait on this lock.
-        {
-            let _spindle = self.spindle_hold();
-            #[cfg(debug_assertions)]
-            if let Some(probe) = Self::take_spend_fold_probe() {
-                probe();
-            }
-            self.txs.copy_cooled_spend_pages()?;
-        }
-        // Disconnect holds this view and then sets the fold hold. Take it only
-        // to drop directory entries after the copy is durable.
-        let _g = hold_view(&self.utxo_publish, &self.utxo_view);
-        self.txs.finish_cooled_spend_pages()
+        )
     }
 
     /// `Some` even generation, or `None` while [`Self::hold_utxo_view`] is held.
@@ -2270,7 +2170,6 @@ impl Store {
             let tip = self.confirmed.tip_height().map(|h| h.0).unwrap_or(0);
             self.spenders.sync_data_only()?;
             self.publish_open_spend_pages(tip, |meta| self.spend_slot_still_live(meta))?;
-            self.fold_sealed_spend_pages()?;
             return Ok(());
         };
         self.sync_spend_checkpoint(height, gen, during_sync)
@@ -2322,7 +2221,7 @@ impl Store {
             return Ok(());
         };
         self.store_spend_marker(height, height, gen)?;
-        self.fold_sealed_spend_pages()
+        Ok(())
     }
 
     /// [`Self::checkpoint_observed_spend`] with hooks around the two reads

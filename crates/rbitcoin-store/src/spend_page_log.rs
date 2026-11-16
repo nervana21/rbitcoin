@@ -1768,6 +1768,11 @@ impl SpendPageLog {
         W: FnMut(u64, &[u8]) -> Result<(), StoreError>,
         S: FnMut() -> Result<(), StoreError>,
     {
+        if self.lock().fold_held {
+            return Err(StoreError::Corrupt(
+                "schema-29 spend page log is held; open it with a 29 binary and checkpoint before migrating",
+            ));
+        }
         let pages: Vec<(u64, PageLoc)> = {
             let g = self.lock();
             g.committed

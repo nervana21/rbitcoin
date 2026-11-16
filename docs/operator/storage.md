@@ -70,6 +70,16 @@ counts, ingest OA, and refuse lines: [`SCHEMA.md`](../../SCHEMA.md) and
 [Schema upgrade](#schema-upgrade). Working-set sizes: SCHEMA census and
 [`docs/ibd-memory.md`](../ibd-memory.md).
 
+## Spend delta growth
+
+Schema 30 keeps the live spend overrides in `spent.delta`. Each page record is
+at most `10 + 512×10 = 5,130` bytes. At the reference mainnet scale (about
+8 million spend pages) the **live** records are therefore bounded by roughly
+40 GiB. Superseded records are not read but are not yet compacted in this
+schema, so the file can grow by one cumulative rewrite per touched page per
+checkpoint until a compaction/fold slice lands. A checkpoint does not fold
+into `spent.body`; the body remains the base.
+
 ## Schema upgrade
 
 Live bytes: [`SCHEMA.md`](../../SCHEMA.md) (`SCHEMA_VERSION = 30`). This section is

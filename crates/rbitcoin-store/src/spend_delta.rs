@@ -9,11 +9,11 @@
 //!
 //! A record holds the complete override set for one page since the body base,
 //! including explicit zeroes. The latest directory entry is authoritative.
-//! Old records are garbage, retired by the maintenance thread; they are never
-//! merged by a reader.
+//! Old records are garbage and are never merged by a reader. This slice does
+//! not compact them; `docs/operator/storage.md` carries the growth bound.
 
 use crate::error::StoreError;
-use crate::file::{write_file_synced_tmp_rename, TableFile};
+use crate::file::{handle_pread_all, write_file_synced_tmp_rename, TableFile};
 use crate::tx_table::BODY_PAGE_SIZE;
 use rbitcoin_primitives::{schema_file_openable, TableKind, SCHEMA_VERSION, STORE_MAGIC};
 use std::collections::{BTreeMap, HashMap};
@@ -29,13 +29,11 @@ pub const SPEND_DELTA_COMMIT_NAME: &str = "spent.delta.commit";
 pub const OPEN_EDGE_CAP: u64 = 2_000_000;
 /// Distinct open pages that ask for an earlier checkpoint.
 pub const OPEN_PAGE_BUDGET: u64 = 65_536;
-/// Retained for callers that still name the old image cap.
-pub const LOG_IMAGE_CAP: u64 = 1024 * 1024 * 1024;
-
 const SLOT: usize = 8;
-const PAGE: u64 = BODY_PAGE_SIZE as u64;
+const PAGE: u64 = BODY_PAGE_SIZE;
 const COMMIT_HEAD: usize = 32;
 const DIR_ENTRY: u64 = 16;
+const DIR_STRIDE: u64 = DIR_ENTRY * 2;
 /// Record header: page_off + count.
 const REC_HEAD: usize = 10;
 const DIR_MAGIC_OFF: u64 = 16;
@@ -115,15 +113,14 @@ impl Pace {
 
 struct Inner {
     open: Layer,
-    sealed: Option<Layer>,
+    sealed: Option<Arc<Layer>>,
     directory: Vec<DeltaLoc>,
-    dir: TableFile,
-    delta: TableFile,
+    dir: Arc<TableFile>,
+    delta: Arc<TableFile>,
     delta_len: u64,
     generation: u32,
     height: Option<u32>,
     sealed_tip: Option<u32>,
-    published_at_freeze: Option<u64>,
     fold_held: bool,
     open_edges: u64,
 }
@@ -184,6 +181,51 @@ fn decode_delta(buf: &[u8], page_off: u64) -> Result<PageSlots, StoreError> {
     Ok(out)
 }
 
+fn self_path(path: &Path) -> PathBuf {
+    path.join(SPEND_DELTA_NAME)
+}
+
+fn read_delta_file(
+    delta: &TableFile,
+    path: &Path,
+    page_off: u64,
+    loc: DeltaLoc,
+) -> Result<PageSlots, StoreError> {
+    let mut buf = vec![0u8; loc.len as usize];
+    handle_pread_all(&delta.read_file, path, loc.offset, &mut buf)?;
+    decode_delta(&buf, page_off)
+}
+
+fn finish_load(
+    dir_path: PathBuf,
+    directory: Vec<DeltaLoc>,
+    dir: TableFile,
+    delta: TableFile,
+    delta_len: u64,
+    generation: u32,
+    height: u32,
+    sealed_tip: u32,
+    fold_held: bool,
+) -> Result<SpendPageLog, StoreError> {
+    Ok(SpendPageLog {
+        dir_path,
+        inner: Mutex::new(Inner {
+            open: HashMap::new(),
+            sealed: None,
+            directory,
+            dir: Arc::new(dir),
+            delta: Arc::new(delta),
+            delta_len,
+            generation,
+            height: Some(height),
+            sealed_tip: Some(sealed_tip),
+            fold_held,
+            open_edges: 0,
+        }),
+        pace: Arc::new(Pace::new()),
+    })
+}
+
 fn encode_delta(page_off: u64, slots: &PageSlots) -> Vec<u8> {
     let mut buf = Vec::with_capacity(REC_HEAD + slots.len().saturating_mul(10));
     buf.extend_from_slice(&page_off.to_le_bytes());
@@ -209,6 +251,18 @@ fn parse_entry(buf: &[u8]) -> DeltaLoc {
         offset: rd_u64(buf, 4),
         len: rd_u32(buf, 12),
     }
+}
+
+/// Pick the newest entry at or below the commit generation. The two slots are
+/// written alternately, so an older commit keeps reading the slot it named.
+fn select_loc(slots: &[DeltaLoc], generation: u32) -> DeltaLoc {
+    let mut best = DeltaLoc::default();
+    for &loc in slots {
+        if loc.is_some() && loc.generation <= generation && loc.generation >= best.generation {
+            best = loc;
+        }
+    }
+    best
 }
 
 fn encode_commit(
@@ -278,13 +332,12 @@ impl SpendPageLog {
                 open: HashMap::new(),
                 sealed: None,
                 directory: Vec::new(),
-                dir: dir_file,
-                delta,
+                dir: Arc::new(dir_file),
+                delta: Arc::new(delta),
                 delta_len: 16,
                 generation: 0,
                 height: None,
                 sealed_tip: None,
-                published_at_freeze: None,
                 fold_held: false,
                 open_edges: 0,
             }),
@@ -310,13 +363,12 @@ impl SpendPageLog {
                     open: HashMap::new(),
                     sealed: None,
                     directory: Vec::new(),
-                    dir: dir_file,
-                    delta,
+                    dir: Arc::new(dir_file),
+                    delta: Arc::new(delta),
                     delta_len: 16,
                     generation: 0,
                     height: None,
                     sealed_tip: None,
-                    published_at_freeze: None,
                     fold_held: false,
                     open_edges: 0,
                 }),
@@ -329,9 +381,9 @@ impl SpendPageLog {
         if delta.logical_len() < delta_len {
             return Err(StoreError::Corrupt("spent.delta short"));
         }
-        let mut directory = Vec::with_capacity(commit.dir_entries as usize);
+        let mut directory = Vec::with_capacity(commit.dir_entries as usize * 2);
         if commit.dir_entries > 0 {
-            let mut buf = vec![0u8; commit.dir_entries as usize * DIR_ENTRY as usize];
+            let mut buf = vec![0u8; commit.dir_entries as usize * DIR_STRIDE as usize];
             let end = DIR_MAGIC_OFF + buf.len() as u64;
             if dir_file.logical_len() < end {
                 return Err(StoreError::Corrupt("spent.delta.idx short"));
@@ -341,10 +393,22 @@ impl SpendPageLog {
                 directory.push(parse_entry(chunk));
             }
         }
-        for (i, loc) in directory.iter_mut().enumerate() {
-            let page_off = i as u64 * PAGE;
-            if page_off >= body_end || !loc.is_some() {
-                *loc = DeltaLoc::default();
+        let mut clipped = false;
+        let mut new_generation = commit.generation;
+        let mut new_delta_len = delta_len;
+        let mut new_dir_entries = commit.dir_entries as u64;
+        for page in 0..(directory.len() / 2) {
+            let page_off = page as u64 * PAGE;
+            let loc = select_loc(&directory[page * 2..page * 2 + 2], commit.generation);
+            if page_off >= body_end {
+                if loc.is_some() {
+                    clipped = true;
+                }
+                directory[page * 2] = DeltaLoc::default();
+                directory[page * 2 + 1] = DeltaLoc::default();
+                continue;
+            }
+            if !loc.is_some() {
                 continue;
             }
             if loc.offset.saturating_add(loc.len as u64) > delta_len {
@@ -352,6 +416,93 @@ impl SpendPageLog {
                     "spent.delta record past committed length",
                 ));
             }
+            let slots = read_delta_file(&delta, &self_path(&path), page_off, loc)?;
+            let kept: PageSlots = slots
+                .iter()
+                .filter(|(rel, _)| {
+                    page_off.saturating_add((u64::from(**rel) + 1).saturating_mul(SLOT as u64))
+                        <= body_end
+                })
+                .map(|(rel, meta)| (*rel, *meta))
+                .collect();
+            if kept.len() != slots.len() {
+                clipped = true;
+                if new_generation == commit.generation {
+                    new_generation = new_generation.wrapping_add(1).max(1);
+                }
+                if !kept.is_empty() {
+                    let bytes = encode_delta(page_off, &kept);
+                    delta.write_uncommitted(new_delta_len, &bytes)?;
+                    directory[page * 2 + (new_generation as usize & 1)] = DeltaLoc {
+                        generation: new_generation,
+                        offset: new_delta_len,
+                        len: bytes.len() as u32,
+                    };
+                    new_delta_len = new_delta_len.saturating_add(bytes.len() as u64);
+                } else {
+                    directory[page * 2] = DeltaLoc::default();
+                    directory[page * 2 + 1] = DeltaLoc::default();
+                }
+            }
+        }
+        if clipped {
+            for page in (new_dir_entries as usize)..(directory.len() / 2) {
+                directory[page * 2] = DeltaLoc::default();
+                directory[page * 2 + 1] = DeltaLoc::default();
+            }
+            new_dir_entries = (0..(directory.len() / 2))
+                .rev()
+                .find(|&page| {
+                    select_loc(&directory[page * 2..page * 2 + 2], new_generation).is_some()
+                })
+                .map_or(0, |page| page as u64 + 1);
+            directory.truncate(new_dir_entries as usize * 2);
+            if new_delta_len > delta_len {
+                if !delta.publish_end(new_delta_len, true) {
+                    return Err(StoreError::io(
+                        path.join(SPEND_DELTA_NAME),
+                        std::io::Error::other("spent.delta clip header publish failed"),
+                    ));
+                }
+                delta.sync_data_only()?;
+            }
+            for page in 0..new_dir_entries as usize {
+                let slot = new_generation as usize & 1;
+                let loc = directory[page * 2 + slot];
+                if loc.is_some() {
+                    dir_file.write_uncommitted(
+                        DIR_MAGIC_OFF + page as u64 * DIR_STRIDE + slot as u64 * DIR_ENTRY,
+                        &entry_bytes(loc),
+                    )?;
+                }
+            }
+            if !dir_file.publish_end(DIR_MAGIC_OFF + new_dir_entries * DIR_STRIDE, true) {
+                return Err(StoreError::io(
+                    path.join(SPEND_DELTA_IDX_NAME),
+                    std::io::Error::other("spent.delta.idx clip header publish failed"),
+                ));
+            }
+            dir_file.sync_data_only()?;
+            let commit_bytes = encode_commit(
+                commit.height,
+                new_generation,
+                new_delta_len,
+                new_dir_entries,
+                commit.sealed_tip,
+                commit.fold_held,
+            );
+            write_file_synced_tmp_rename(&commit_path, &commit_bytes)?;
+            return finish_load(
+                path,
+                directory,
+                dir_file,
+                delta,
+                new_delta_len,
+                new_generation,
+                commit.height,
+                commit.sealed_tip,
+                commit.fold_held,
+            );
         }
         Ok(Self {
             dir_path: path,
@@ -359,13 +510,12 @@ impl SpendPageLog {
                 open: HashMap::new(),
                 sealed: None,
                 directory,
-                dir: dir_file,
-                delta,
+                dir: Arc::new(dir_file),
+                delta: Arc::new(delta),
                 delta_len,
                 generation: commit.generation,
                 height: Some(commit.height),
                 sealed_tip: Some(commit.sealed_tip),
-                published_at_freeze: None,
                 fold_held: commit.fold_held,
                 open_edges: 0,
             }),
@@ -428,32 +578,51 @@ impl SpendPageLog {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn covers(&self, abs: u64) -> bool {
+    /// True when the directory serves this exact slot.
+    pub fn covers(&self, abs: u64) -> Result<bool, StoreError> {
         let page_off = page_of(abs);
         let rel = rel_of(abs);
-        let g = self.lock();
-        if g.open.get(&page_off).is_some_and(|p| p.contains_key(&rel)) {
-            return true;
+        let loc = {
+            let g = self.lock();
+            if g.open.get(&page_off).is_some_and(|p| p.contains_key(&rel)) {
+                return Ok(true);
+            }
+            if g.sealed
+                .as_ref()
+                .and_then(|m| m.get(&page_off))
+                .is_some_and(|p| p.contains_key(&rel))
+            {
+                return Ok(true);
+            }
+            let page = (page_off / PAGE) as usize;
+            if page * 2 + 1 >= g.directory.len() {
+                DeltaLoc::default()
+            } else {
+                select_loc(&g.directory[page * 2..page * 2 + 2], g.generation)
+            }
+        };
+        if !loc.is_some() {
+            return Ok(false);
         }
-        if g.sealed
-            .as_ref()
-            .and_then(|m| m.get(&page_off))
-            .is_some_and(|p| p.contains_key(&rel))
-        {
-            return true;
-        }
-        g.directory
-            .get((page_off / PAGE) as usize)
-            .is_some_and(|loc| loc.is_some())
+        Ok(self.read_delta(page_off, loc)?.contains_key(&rel))
     }
 
-    pub fn slot(&self, abs: u64) -> Option<Slot> {
+    /// Page-level fast path for the write-side skip decision. A page that has
+    /// any delta is conservatively logged; a later cumulative record dedups it.
+    pub fn page_has_delta(&self, abs: u64) -> bool {
+        let page = (page_of(abs) / PAGE) as usize;
+        let g = self.lock();
+        page * 2 + 1 < g.directory.len()
+            && select_loc(&g.directory[page * 2..page * 2 + 2], g.generation).is_some()
+    }
+
+    pub fn slot(&self, abs: u64) -> Result<Option<Slot>, StoreError> {
         let page_off = page_of(abs);
         let rel = rel_of(abs);
         let loc = {
             let g = self.lock();
             if let Some(meta) = g.open.get(&page_off).and_then(|p| p.get(&rel)) {
-                return Some(*meta);
+                return Ok(Some(*meta));
             }
             if let Some(meta) = g
                 .sealed
@@ -461,22 +630,25 @@ impl SpendPageLog {
                 .and_then(|m| m.get(&page_off))
                 .and_then(|p| p.get(&rel))
             {
-                return Some(*meta);
+                return Ok(Some(*meta));
             }
-            *g.directory
-                .get((page_off / PAGE) as usize)
-                .unwrap_or(&DeltaLoc::default())
+            let page = (page_off / PAGE) as usize;
+            if page * 2 + 1 >= g.directory.len() {
+                DeltaLoc::default()
+            } else {
+                select_loc(&g.directory[page * 2..page * 2 + 2], g.generation)
+            }
         };
         if !loc.is_some() {
-            return None;
+            return Ok(None);
         }
-        let slots = self.read_delta(page_off, loc).ok()?;
-        slots.get(&rel).copied()
+        let slots = self.read_delta(page_off, loc)?;
+        Ok(slots.get(&rel).copied())
     }
 
-    pub fn slots_at(&self, abs: &[u64]) -> Vec<Option<Slot>> {
+    pub fn slots_at(&self, abs: &[u64]) -> Result<Vec<Option<Slot>>, StoreError> {
         if abs.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let mut out = vec![None; abs.len()];
         let mut order: Vec<(u64, u16, usize)> = abs
@@ -513,10 +685,12 @@ impl SpendPageLog {
                     }
                 }
                 if !miss.is_empty() {
-                    let loc = *g
-                        .directory
-                        .get((page_off / PAGE) as usize)
-                        .unwrap_or(&DeltaLoc::default());
+                    let page = (page_off / PAGE) as usize;
+                    let loc = if page * 2 + 1 >= g.directory.len() {
+                        DeltaLoc::default()
+                    } else {
+                        select_loc(&g.directory[page * 2..page * 2 + 2], g.generation)
+                    };
                     if loc.is_some() {
                         pending.push(Pending {
                             page_off,
@@ -529,15 +703,14 @@ impl SpendPageLog {
             }
         }
         for p in pending {
-            if let Ok(slots) = self.read_delta(p.page_off, p.loc) {
-                for (rel, i) in p.slots {
-                    if let Some(meta) = slots.get(&rel) {
-                        out[i] = Some(*meta);
-                    }
+            let slots = self.read_delta(p.page_off, p.loc)?;
+            for (rel, i) in p.slots {
+                if let Some(meta) = slots.get(&rel) {
+                    out[i] = Some(*meta);
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     pub fn note_slots(&self, slots: &[(u64, Slot)]) -> Result<(), StoreError> {
@@ -573,10 +746,6 @@ impl SpendPageLog {
         g.sealed_tip = Some(g.sealed_tip.map_or(tip, |prev| prev.max(tip)));
     }
 
-    pub fn cover_published_len(&self, _published: u64) {
-        self.lock().published_at_freeze = Some(_published);
-    }
-
     pub fn freeze_open(&self) {
         let mut g = self.lock();
         let open = std::mem::take(&mut g.open);
@@ -584,21 +753,15 @@ impl SpendPageLog {
         if open.is_empty() {
             return;
         }
-        match &mut g.sealed {
-            Some(sealed) => {
-                for (page, slots) in open {
-                    sealed.entry(page).or_default().extend(slots);
-                }
-            }
-            None => g.sealed = Some(open),
+        let mut merged = match &g.sealed {
+            Some(sealed) => (**sealed).clone(),
+            None => HashMap::new(),
+        };
+        for (page, slots) in open {
+            merged.entry(page).or_default().extend(slots);
         }
+        g.sealed = Some(Arc::new(merged));
     }
-
-    pub fn freeze_before_cooled_copy(&self) {
-        self.freeze_open();
-    }
-
-    pub fn widen_for_checkpoint(&self, _height: u32) {}
 
     pub fn hold_fold_above(&self, tip: u32) -> Result<(), StoreError> {
         let path = self.dir_path.join(SPEND_DELTA_COMMIT_NAME);
@@ -649,7 +812,15 @@ impl SpendPageLog {
         S: FnOnce(&Self) -> Result<u32, StoreError>,
     {
         before_freeze(self, &|| 0)?;
-        let sealed = { self.lock().sealed.take() };
+        let (sealed, delta_file, dir_file, fold_held) = {
+            let g = self.lock();
+            (
+                g.sealed.clone(),
+                Arc::clone(&g.delta),
+                Arc::clone(&g.dir),
+                g.fold_held,
+            )
+        };
         let Some(sealed) = sealed else {
             return Ok(());
         };
@@ -660,17 +831,17 @@ impl SpendPageLog {
             g.generation
         };
         let mut delta_len = self.lock().delta_len;
-        let mut dir_entries = self.lock().directory.len() as u64;
+        let mut dir_entries = (self.lock().directory.len() / 2) as u64;
         let mut writes: Vec<(u64, DeltaLoc)> = Vec::new();
-        for (page_off, new_slots) in sealed {
+        for (&page_off, new_slots) in sealed.iter() {
             let old = self.directory_loc(page_off);
             let mut merged = if old.is_some() {
-                self.read_delta(page_off, old).unwrap_or_default()
+                self.read_delta(page_off, old)?
             } else {
                 BTreeMap::new()
             };
             for (rel, meta) in new_slots {
-                merged.insert(rel, meta);
+                merged.insert(*rel, *meta);
             }
             for meta in merged.values_mut() {
                 if *meta != [0u8; SLOT] && !keep(meta)? {
@@ -681,10 +852,7 @@ impl SpendPageLog {
             if bytes.len() > u32::MAX as usize {
                 return Err(StoreError::Corrupt("spent.delta record too long"));
             }
-            {
-                let g = self.lock();
-                g.delta.write_uncommitted(delta_len, &bytes)?;
-            }
+            delta_file.write_uncommitted(delta_len, &bytes)?;
             let loc = DeltaLoc {
                 generation,
                 offset: delta_len,
@@ -697,76 +865,93 @@ impl SpendPageLog {
             }
             writes.push((page_off, loc));
         }
-        {
-            let g = self.lock();
-            let _ = g.delta.publish_end(delta_len, true);
-            g.delta.sync_data_only()?;
+        if !delta_file.publish_end(delta_len, true) {
+            return Err(StoreError::io(
+                self.dir_path.join(SPEND_DELTA_NAME),
+                std::io::Error::other("spent.delta header publish failed"),
+            ));
         }
-        let mut dir = self.lock();
-        while dir.directory.len() < dir_entries as usize {
-            dir.directory.push(DeltaLoc::default());
-        }
+        delta_file.sync_data_only()?;
         for (page_off, loc) in &writes {
             let idx = (*page_off / PAGE) as usize;
-            dir.directory[idx] = *loc;
-            dir.dir
-                .write_uncommitted(DIR_MAGIC_OFF + idx as u64 * DIR_ENTRY, &entry_bytes(*loc))?;
+            let slot = (generation & 1) as usize;
+            dir_file.write_uncommitted(
+                DIR_MAGIC_OFF + idx as u64 * DIR_STRIDE + slot as u64 * DIR_ENTRY,
+                &entry_bytes(*loc),
+            )?;
         }
         if dir_entries > 0 {
-            let _ = dir
-                .dir
-                .publish_end(DIR_MAGIC_OFF + dir_entries * DIR_ENTRY, true);
-            dir.dir.sync_data_only()?;
+            if !dir_file.publish_end(DIR_MAGIC_OFF + dir_entries * DIR_STRIDE, true) {
+                return Err(StoreError::io(
+                    self.dir_path.join(SPEND_DELTA_IDX_NAME),
+                    std::io::Error::other("spent.delta.idx header publish failed"),
+                ));
+            }
+            dir_file.sync_data_only()?;
         }
-        dir.delta_len = delta_len;
-        dir.height = Some(height);
-        dir.sealed_tip = Some(sealed_tip);
+        {
+            let mut g = self.lock();
+            while g.directory.len() < dir_entries as usize * 2 {
+                g.directory.push(DeltaLoc::default());
+            }
+            for (page_off, loc) in &writes {
+                let idx = (*page_off / PAGE) as usize;
+                let slot = (generation & 1) as usize;
+                g.directory[idx * 2 + slot] = *loc;
+            }
+            g.delta_len = delta_len;
+            g.height = Some(height);
+            g.sealed_tip = Some(sealed_tip);
+        }
         let commit = encode_commit(
             height,
             generation,
             delta_len,
             dir_entries,
             sealed_tip,
-            dir.fold_held,
+            fold_held,
         );
         let path = self.dir_path.join(SPEND_DELTA_COMMIT_NAME);
         write_file_synced_tmp_rename(&path, &commit)?;
+        {
+            let mut g = self.lock();
+            if g.sealed
+                .as_ref()
+                .is_some_and(|cur| Arc::ptr_eq(cur, &sealed))
+            {
+                g.sealed = None;
+            }
+        }
         self.pace.notify_room();
         Ok(())
     }
 
     fn directory_loc(&self, page_off: u64) -> DeltaLoc {
-        self.lock()
-            .directory
-            .get((page_off / PAGE) as usize)
-            .copied()
-            .unwrap_or_default()
+        let g = self.lock();
+        let page = (page_off / PAGE) as usize;
+        if page * 2 + 1 >= g.directory.len() {
+            return DeltaLoc::default();
+        }
+        select_loc(&g.directory[page * 2..page * 2 + 2], g.generation)
     }
 
     fn read_delta(&self, page_off: u64, loc: DeltaLoc) -> Result<PageSlots, StoreError> {
         if !loc.is_some() {
             return Ok(BTreeMap::new());
         }
+        let file = self
+            .lock()
+            .delta
+            .read_file
+            .try_clone()
+            .map_err(|e| StoreError::io(self.dir_path.join(SPEND_DELTA_NAME), e))?;
         let mut buf = vec![0u8; loc.len as usize];
-        self.lock().delta.pread_at(loc.offset, &mut buf)?;
+        handle_pread_all(
+            &file,
+            &self.dir_path.join(SPEND_DELTA_NAME),
+            loc.offset,
+            &mut buf,
+        )?;
         decode_delta(&buf, page_off)
-    }
-
-    pub fn install_directory(&self) -> Option<std::collections::HashSet<u32>> {
-        None
-    }
-
-    pub fn unlink_if_synced(&self, _live: &std::collections::HashSet<u32>) {}
-
-    pub fn copy_cooled<W, S>(&self, _write_page: W, _sync: S) -> Result<(), StoreError>
-    where
-        W: FnMut(u64, &[u8]) -> Result<(), StoreError>,
-        S: FnMut() -> Result<(), StoreError>,
-    {
-        Ok(())
-    }
-
-    pub fn finish_cooled(&self) -> Result<(), StoreError> {
-        Ok(())
     }
 }

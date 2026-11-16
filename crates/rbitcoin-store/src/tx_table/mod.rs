@@ -2477,7 +2477,7 @@ impl TxTable {
         let body_path = self.spent.body_file_path();
 
         let mut out: Vec<Option<SpenderSlot>> = vec![None; abs_offs.len()];
-        let logged = self.spend_pages.slots_at(abs_offs);
+        let logged = self.spend_pages.slots_at(abs_offs)?;
         let mut submitted: Vec<usize> = Vec::with_capacity(abs_offs.len());
         for (i, &off) in abs_offs.iter().enumerate() {
             let end = off.saturating_add(META_LEN as u64);
@@ -2526,7 +2526,7 @@ impl TxTable {
     }
 
     pub(crate) fn spend_log_serves(&self, abs: u64) -> bool {
-        self.spend_pages.covers(abs)
+        self.spend_pages.page_has_delta(abs)
     }
 
     /// True when the published body slot is exactly `(field, flags, vin)`.
@@ -2563,7 +2563,7 @@ impl TxTable {
         if abs.saturating_add(OutputRecord::SPENT_SLOT_LEN as u64) > end {
             return Err(StoreError::Corrupt("spent slot OOB"));
         }
-        if let Some(raw) = self.spend_pages.slot(abs) {
+        if let Some(raw) = self.spend_pages.slot(abs)? {
             let (flags, field, vin) = decode_spent_slot(&raw)?;
             return Ok((flags & output_flags::MULTI_SPENDER != 0, field, vin));
         }
@@ -2600,7 +2600,7 @@ impl TxTable {
         }
         let logged = self
             .spend_pages
-            .slots_at(&in_range.iter().map(|(_, abs)| *abs).collect::<Vec<_>>());
+            .slots_at(&in_range.iter().map(|(_, abs)| *abs).collect::<Vec<_>>())?;
         let mut misses = Vec::new();
         for (&(i, _), raw) in in_range.iter().zip(logged) {
             if let Some(logged) = raw {
@@ -2681,16 +2681,6 @@ impl TxTable {
         )
     }
 
-    /// RAM install only. The caller unlinks with the returned set after it
-    /// drops the utxo view.
-    pub(crate) fn install_open_spend_pages(&self) -> Option<std::collections::HashSet<u32>> {
-        self.spend_pages.install_directory()
-    }
-
-    pub(crate) fn unlink_spend_generations_if_synced(&self, live: &std::collections::HashSet<u32>) {
-        self.spend_pages.unlink_if_synced(live);
-    }
-
     pub(crate) fn bind_spend_sync_wake(&self, wake: crate::spend_delta::SpendSyncWake) {
         self.spend_pages.bind_sync_wake(wake);
     }
@@ -2713,7 +2703,7 @@ impl TxTable {
     }
 
     #[doc(hidden)]
-    pub fn spend_log_slot(&self, abs: u64) -> Option<[u8; 8]> {
+    pub fn spend_log_slot(&self, abs: u64) -> Result<Option<[u8; 8]>, StoreError> {
         self.spend_pages.slot(abs)
     }
 
@@ -2721,34 +2711,8 @@ impl TxTable {
         self.spend_pages.hold_fold_above(tip)
     }
 
-    pub(crate) fn widen_for_checkpoint(&self, height: u32) {
-        self.spend_pages.widen_for_checkpoint(height);
-    }
-
-    /// Swap open pages into `frozen` before the cooled copy.
-    ///
-    /// The confirmed tip is sealed after that copy. Sealing it here holds a
-    /// generation that does not contain the disconnected block.
-    #[doc(hidden)]
-    pub fn freeze_open_spend_pages(&self) {
-        self.spend_pages.freeze_before_cooled_copy();
-    }
-
     pub(crate) fn spend_log_above(&self, tip: u32) -> bool {
         self.spend_pages.above_tip(tip)
-    }
-
-    pub(crate) fn copy_cooled_spend_pages(&self) -> Result<(), StoreError> {
-        // Grow-only. `write_body_abs` samples the length, then stores that
-        // sample. Confirm can publish a longer end in between.
-        self.spend_pages.copy_cooled(
-            |off, image| self.spent.write_body_pwrite(off, image),
-            || self.spent.sync_data_only(),
-        )
-    }
-
-    pub(crate) fn finish_cooled_spend_pages(&self) -> Result<(), StoreError> {
-        self.spend_pages.finish_cooled()
     }
 
     /// Record one decided spend slot.
@@ -2779,7 +2743,8 @@ impl TxTable {
         let slot_vin = if multi { 0 } else { vin };
         let meta = encode_spent_slot(flags, field, slot_vin)?;
         let published = self.spent.body_published_len();
-        if self.spend_pages.covers(abs) || crate::spend_delta::is_historical(published, abs) {
+        if self.spend_pages.page_has_delta(abs) || crate::spend_delta::is_historical(published, abs)
+        {
             return self.note_historical_spend_slots(&[(abs, meta)]);
         }
         self.spent.write_body_pwrite(abs, &meta)
