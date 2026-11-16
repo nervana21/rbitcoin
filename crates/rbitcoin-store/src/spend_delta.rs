@@ -196,6 +196,7 @@ fn read_delta_file(
     decode_delta(&buf, page_off)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_load(
     dir_path: PathBuf,
     directory: Vec<DeltaLoc>,
