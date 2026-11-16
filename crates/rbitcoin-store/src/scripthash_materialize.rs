@@ -1454,6 +1454,8 @@ pub fn collect_unsorted_covering_txs(
     cancel: Option<&AtomicBool>,
 ) -> Result<UnsortedCollect, StoreError> {
     let last = txs.count();
+    // `DONE.keys` names creates through `last`; they reach the device first.
+    txs.sync_class_a_data()?;
     if leftover_legacy_unsorted(dir)
         && read_phase_done(dir, KEYS_DONE_NAME, KEYS_DONE_MAGIC, n_shards).is_none()
     {
@@ -1826,6 +1828,8 @@ pub fn collect_posts_covering(
     }
     let n_shards = table.head_shard_count().max(1);
     let last = txs.count();
+    // `DONE.post` names creates through `last`; they reach the device first.
+    txs.sync_class_a_data()?;
     let done = read_phase_done(dir, POST_DONE_NAME, POST_DONE_MAGIC, n_shards);
     let action = plan_unsorted_collect(
         done.as_ref().map(|d| d.last_fk),

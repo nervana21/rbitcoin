@@ -4055,3 +4055,48 @@ fn include_hwm_reads_eight_and_ignores_short() {
     std::fs::write(&path, [1u8, 2, 3]).unwrap();
     assert_eq!(load_include_hwm(dir.path()), 0);
 }
+
+/// A scripthash collect syncs the Class A creates it scans before it names
+/// them in `DONE.keys` or `DONE.post`. Creates that never reached the device
+/// can be cut at the next open, and their numbers taken by other txs.
+#[test]
+fn collect_syncs_the_scanned_creates_first() {
+    let dir = tmp();
+    let s = rbitcoin_store::Store::create_tiny(&dir).unwrap();
+    let n_shards = 4usize;
+    for shard in 0..n_shards {
+        let mut txid = [0u8; 32];
+        txid[0] = shard as u8;
+        s.put_tx_full_batch_indexed(
+            &[class_a_coinbase(
+                txid,
+                script_for_prefix_shard(shard, n_shards),
+            )],
+            true,
+        )
+        .unwrap();
+    }
+    let sh_dir = dir.join("sh4");
+    std::fs::create_dir_all(&sh_dir).unwrap();
+    let table = four_shard_dir_table(&sh_dir);
+    let udir = sh_dir.join(UNSORTED_SHARD_DIR);
+    rbitcoin_store::io_handle::arm_fail_sync(s.txs.txids.file.io_handle(), 1);
+    assert!(
+        collect_unsorted_covering_txs(&s.txs, &table, &udir, n_shards, 1, false, None).is_err(),
+        "keys collect named creates whose archive did not sync"
+    );
+    assert!(!udir
+        .join(rbitcoin_store::scripthash_materialize::KEYS_DONE_NAME)
+        .exists());
+    collect_unsorted_covering_txs(&s.txs, &table, &udir, n_shards, 1, false, None).unwrap();
+    seal_mphf_from_keys(&table, &udir, n_shards, None).unwrap();
+    rbitcoin_store::io_handle::arm_fail_sync(s.txs.txids.file.io_handle(), 1);
+    assert!(
+        rbitcoin_store::scripthash_materialize::collect_posts_covering(
+            &s.txs, &table, &udir, 1, false, None,
+        )
+        .is_err(),
+        "posts collect named creates whose archive did not sync"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

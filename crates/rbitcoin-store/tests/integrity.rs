@@ -1389,3 +1389,33 @@ fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
     let _ = std::fs::remove_dir_all(&img);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A spend page commit that names a spender with no Class C row is not
+/// served after reopen.
+///
+/// The Class A sync fails after the commit is written, so the spender's
+/// create may be cut and its number taken. Open drops the unstrong spend
+/// before any later transaction can reuse that number.
+#[test]
+fn spend_commit_naming_an_unsealed_spender_is_dropped_on_reopen() {
+    let dir = tmp();
+    let s = Store::create_tiny(&dir).unwrap();
+    let write = rbitcoin_store::ClassCWrite::for_test();
+    let (genesis, _) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(0)));
+    let parent = s.header_txs.get_list(genesis).unwrap().unwrap()[0];
+    let spender = put_coinbase(&s, 9);
+    s.put_spend_create(parent, 0, spender, 0).unwrap();
+    s.note_spend_snapshot(0);
+    rbitcoin_store::io_handle::arm_fail_sync(s.txs.body.body.io_handle(), 1);
+    assert!(s.checkpoint_spend_through(0).is_err());
+    drop(s);
+    let s = Store::open_tiny(&dir).unwrap();
+    let (off, len) = s.txs.spent_range(parent).unwrap();
+    let (_, field, _) = s.txs.get_output_spender_meta_at(off, len, 0).unwrap();
+    assert!(
+        field.is_null(),
+        "reopen served spender {field:?}, which no Class C row names"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

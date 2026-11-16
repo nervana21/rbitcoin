@@ -464,3 +464,26 @@ fn finalize_chases_a_create_that_lands_after_the_ready_sample() {
     assert!(q.store.scripthash.include_hwm() >= q.store.txs.count());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The tail backfill syncs the Class A creates it scans before
+/// `include_hwm` names them. A failed sync leaves the watermark where it was.
+#[test]
+fn backfill_syncs_the_scanned_creates_before_the_watermark() {
+    let (dir, q) = rbitcoin_query::testutil::tiny_query_labeled("q-sh-backfill-sync");
+    seed_direct_chain(&q, 3);
+    let _ = q.finalize_sh_runs().unwrap();
+    extend_direct_chain(&q, 1);
+    // The Direct barrier also syncs Class A; let it finish before arming.
+    q.join_tip_flush().unwrap();
+    let before = q.store.scripthash.include_hwm();
+    assert!(before < q.store.txs.count());
+    rbitcoin_store::io_handle::arm_fail_sync(q.store.txs.txids.file.io_handle(), 1);
+    assert!(
+        q.backfill_sh_creates_from_class_a().is_err(),
+        "the backfill published creates whose archive did not sync"
+    );
+    assert_eq!(q.store.scripthash.include_hwm(), before);
+    q.backfill_sh_creates_from_class_a().expect("backfill");
+    assert!(q.sh_is_tip_ready());
+    let _ = std::fs::remove_dir_all(&dir);
+}

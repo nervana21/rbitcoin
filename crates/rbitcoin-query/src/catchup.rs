@@ -405,6 +405,8 @@ impl Query {
         let mut total = 0u64;
         loop {
             let last = self.store.txs.count();
+            // `include_hwm` names creates through `last`; they reach the device first.
+            self.store.txs.sync_class_a_data()?;
             self.sh_run.refresh_seal();
             let floor = durable_sh_inclusion_floor(
                 self.store.scripthash.include_hwm(),
