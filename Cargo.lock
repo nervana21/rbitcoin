@@ -1045,6 +1045,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbitcoin-landmines"
+version = "0.9.99"
+dependencies = [
+ "bitcoin",
+ "bitcoin_hashes 0.14.101",
+]
+
+[[package]]
 name = "rbitcoin-log"
 version = "0.9.99"
 

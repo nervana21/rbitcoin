@@ -1,0 +1,25 @@
+[package]
+name = "rbitcoin-landmines"
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Experimental quantum landmines and vulnerable coin auctions (not default consensus)"
+
+[lib]
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[dependencies]
+bitcoin = { workspace = true }
+bitcoin_hashes = { workspace = true }
+
+[[test]]
+name = "suite"
+path = "tests/suite.rs"
+
+[lints]
+workspace = true

@@ -17,6 +17,7 @@ members = [
     "crates/rbitcoin-node",
     "crates/rbitcoin-test",
     "crates/rbitcoin-bench",
+    "crates/rbitcoin-landmines",
 ]
 default-members = ["crates/rbitcoin-node"]
 
@@ -47,6 +48,7 @@ rbitcoin-cli = { path = "crates/rbitcoin-cli" }
 rbitcoin-node = { path = "crates/rbitcoin-node" }
 rbitcoin-test = { path = "crates/rbitcoin-test" }
 rbitcoin-bench = { path = "crates/rbitcoin-bench" }
+rbitcoin-landmines = { path = "crates/rbitcoin-landmines" }
 
 # JSON for Electrum (and tests). No other serde derives in core crates.
 serde = { version = "1", features = ["derive"] }

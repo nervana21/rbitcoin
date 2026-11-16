@@ -22,6 +22,7 @@ shared libraries through storage and runtime crates to composition and tools;
 | `rbitcoin-cli` | RPC client binary |
 | `rbitcoin-test` | High-level scenario and integration-test harness |
 | `rbitcoin-bench` | Optional Electrum/Esplora client benchmark |
+| `rbitcoin-landmines` | Experimental quantum landmines and vulnerable coin auctions. Not wired into default validation |
 
 For crate neighbors and read-first links, see
 `crates/<name>/AGENTS.md` when present. Those files own no facts. Test locations and suite selection are

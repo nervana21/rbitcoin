@@ -49,6 +49,7 @@ into `AGENTS.md`.
 | [`rpc.md`](./rpc.md) | Core-class JSON-RPC subset. |
 | [`consensus-tests.md`](./consensus-tests.md) | Rules we own vs Core corpora. |
 | [`blvm-consensus-crosswalk.md`](./blvm-consensus-crosswalk.md) | BLVM register ids mapped to our code and tests. Gaps both ways stay there. |
+| [`landmines.md`](./landmines.md) | Experimental quantum landmines / vulnerable coin auctions model (`rbitcoin-landmines`). Not default consensus. |
 | [`core-functional.md`](./core-functional.md) | Core functional harness. |
 | [`overlay-functional.md`](./overlay-functional.md) | Private Tor / i2pd / cjdns mesh harness (labeled / nightly). |
 | [`how-we-plan.md`](./how-we-plan.md) | Agent contract (cycle, Agent RAM, keep-compiling), then human rationale. |
