@@ -276,3 +276,53 @@ fn ovf_header_miss_does_not_seal_the_create() {
     assert_eq!(outs(&t, 1).len(), 256);
     assert!(t.get_meta_and_outputs(rbitcoin_primitives::Fk(2)).is_err());
 }
+
+/// Segment files and no `tx.head/meta` are a torn rebuild. Open wipes that
+/// directory, serves the txid from Class A, and the next open keeps the head.
+#[test]
+fn tx_head_without_meta_rebuilds_from_class_a() {
+    let dir = super::tempfile_dir("head-no-meta");
+    let t = TxTable::create_tiny(&dir).unwrap();
+    let batch = [one(7)];
+    let txid = batch[0].0.txid;
+    t.put_full_batch_indexed(&batch, false).unwrap();
+    t.head.flush().unwrap();
+    drop(t);
+    let root = dir.join("tx.head");
+    std::fs::write(root.join("000000"), b"torn-segment").unwrap();
+    std::fs::remove_file(root.join("meta")).unwrap();
+
+    rbitcoin_log::capture_logs(true);
+    let t = TxTable::open_tiny(&dir).unwrap();
+    let first = rbitcoin_log::take_logs();
+    rbitcoin_log::capture_logs(false);
+    let text = first
+        .iter()
+        .map(|(_, line)| line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("tx.head rebuild begin"), "{text}");
+    assert_eq!(
+        t.get_by_txid(&txid).unwrap().unwrap().0,
+        rbitcoin_primitives::Fk(1)
+    );
+    drop(t);
+
+    rbitcoin_log::capture_logs(true);
+    let t = TxTable::open_tiny(&dir).unwrap();
+    let second = rbitcoin_log::take_logs();
+    rbitcoin_log::capture_logs(false);
+    let text = second
+        .iter()
+        .map(|(_, line)| line.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !text.contains("tx.head rebuild begin"),
+        "a finished head rebuilds again: {text}"
+    );
+    assert_eq!(
+        t.get_by_txid(&txid).unwrap().unwrap().0,
+        rbitcoin_primitives::Fk(1)
+    );
+}

@@ -1107,19 +1107,19 @@ pub fn refuse_legacy_mono_head(dir: &Path) -> Result<(), StoreError> {
             "legacy monolithic tx.head present — reindex required (segmented 25-bit heads)",
         ));
     }
-    // Directory is the **new** segment home. Reject only non-empty dirs that are
-    // not our layout (no `meta`, no pending flat migration).
-    if mono.is_dir() {
-        let new_meta = mono.join("meta");
-        if !new_meta.is_file() && !dir.join("tx.head.meta").is_file() {
-            let non_empty = std::fs::read_dir(&mono)
-                .map(|rd| rd.filter_map(|e| e.ok()).next().is_some())
-                .unwrap_or(false);
-            if non_empty {
-                return Err(StoreError::Corrupt(
-                    "legacy sharded tx.head/ dir — reindex required",
-                ));
-            }
+    // Directory is the **new** segment home. Segment files with no `meta` (and
+    // no pending flat migration) are a rebuild that power loss cut before its
+    // `meta` landed. The head is derived from Class A: wipe the directory, and
+    // the caller rebuilds it.
+    if mono.is_dir() && !mono.join("meta").is_file() && !dir.join("tx.head.meta").is_file() {
+        let non_empty = std::fs::read_dir(&mono)
+            .map(|rd| rd.filter_map(|e| e.ok()).next().is_some())
+            .unwrap_or(false);
+        if non_empty {
+            rbitcoin_log::warn!(
+                "store: tx.head/ has segment files and no meta — wipe + rebuild from Class A"
+            );
+            std::fs::remove_dir_all(&mono).map_err(|e| StoreError::io(&mono, e))?;
         }
     }
     for name in [
