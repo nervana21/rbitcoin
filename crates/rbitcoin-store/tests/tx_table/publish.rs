@@ -58,9 +58,12 @@ fn numbered(n: u16) -> (TxRecord, Vec<InputRecord>, Vec<OutputRecord>) {
     )
 }
 
-/// A body header short of the locator count is not a prefix to recover.
+/// The locator header of the second create landed and the body headers did
+/// not. The barrier syncs Class A before Class C, so no commit names that
+/// create: open keeps the prefix the body headers cover, and the next
+/// append takes the dropped number.
 #[test]
-fn body_header_short_of_the_locator_is_corrupt() {
+fn body_header_short_of_the_locator_reopens_at_the_covered_prefix() {
     let dir = super::tempfile_dir("body-behind-loc");
     let t = TxTable::create_tiny(&dir).unwrap();
     t.put_full_batch_indexed(&[one(1)], false).unwrap();
@@ -73,12 +76,29 @@ fn body_header_short_of_the_locator_is_corrupt() {
     set_disk_hwm(&t.seqsigwit.body, in_end);
     set_disk_hwm(&t.spent.body, sp_end);
     drop(t);
-    match TxTable::open_tiny(&dir) {
-        Err(rbitcoin_store::StoreError::Corrupt(m))
-            if m.contains("body header short of locator") => {}
-        Err(e) => panic!("open returned {e}"),
-        Ok(_) => panic!("open kept a body header short of the locator"),
-    }
+    let t = TxTable::open_tiny(&dir).expect("an unpublished tail truncates");
+    assert_eq!(t.count(), 1);
+    assert_eq!(outs(&t, 1)[0].script, vec![1]);
+    let again = t.put_full_batch_indexed(&[one(3)], false).unwrap();
+    assert_eq!(again, vec![rbitcoin_primitives::Fk(2)]);
+    assert_eq!(outs(&t, 2)[0].script, vec![3]);
+}
+
+/// Only the witness body header fell behind. Open cuts every stem to the
+/// creates that header still covers.
+#[test]
+fn short_witness_body_header_reopens_at_the_covered_prefix() {
+    let dir = super::tempfile_dir("witness-behind-loc");
+    let t = TxTable::create_tiny(&dir).unwrap();
+    t.put_full_batch_indexed(&[one(1)], false).unwrap();
+    let in_end = on_disk_hwm(&t.seqsigwit.body);
+    t.put_full_batch_indexed(&[one(2), one(3)], false).unwrap();
+    set_disk_hwm(&t.seqsigwit.body, in_end);
+    drop(t);
+    let t = TxTable::open_tiny(&dir).expect("an unpublished tail truncates");
+    assert_eq!(t.count(), 1);
+    assert_eq!(t.input.count(), 1);
+    assert_eq!(t.txids.count(), 1);
 }
 
 /// `create.loc` landed and `seqsigwit.loc` did not. Open cuts back to the

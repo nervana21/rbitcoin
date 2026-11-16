@@ -965,23 +965,37 @@ pub fn repair_class_a_count_skew(
     let n_loc = stems.create_loc.count();
     let n_txids = stems.txids.count();
     let n_seqsigwit_loc = stems.seqsigwit_loc.count();
-    let short_input = match pruned_uncovered_input_floor(
-        &stems,
-        n_loc,
-        n_txids,
-        n_seqsigwit_loc,
-        prune_seqsigwit_mode,
-        input_existed,
-    ) {
-        Some(n) => Some(n),
-        None => short_new_layout_input(
+    // The connect barrier syncs Class A before any Class C row names a
+    // create, so every create past what the headers cover is an unpublished
+    // tail. A body header short of the locator is that tail too: keep the
+    // creates every body header still covers.
+    let stem =
+        class_a_skew_target_count(n_loc, n_txids, n_seqsigwit_loc, prune_seqsigwit_mode, None)
+            .unwrap_or(n_loc);
+    let covered = body_headers_cover(&stems, stem, prune_seqsigwit_mode)?;
+    // The short-input probe reads the witness row past the input count. Run
+    // it only inside the covered prefix, where that row is on disk.
+    let short_input = if stems.input.count() < covered {
+        match pruned_uncovered_input_floor(
             &stems,
             n_loc,
             n_txids,
             n_seqsigwit_loc,
             prune_seqsigwit_mode,
             input_existed,
-        )?,
+        ) {
+            Some(n) => Some(n),
+            None => short_new_layout_input(
+                &stems,
+                n_loc,
+                n_txids,
+                n_seqsigwit_loc,
+                prune_seqsigwit_mode,
+                input_existed,
+            )?,
+        }
+    } else {
+        None
     };
     let skewed = class_a_skew_target_count(
         n_loc,
@@ -990,15 +1004,9 @@ pub fn repair_class_a_count_skew(
         prune_seqsigwit_mode,
         short_input,
     );
-    let n = skewed.unwrap_or(n_loc);
+    let n = skewed.unwrap_or(n_loc).min(covered);
+    let skewed = skewed.or((n < n_loc).then_some(n));
     let (tx_end, sp_end, in_end) = class_a_skew_stem_ends(&stems, n, prune_seqsigwit_mode)?;
-    // The locator count is the commit. A body header ahead of it is the crash
-    // before the locator pwrite. A body header short of it was not published.
-    require_body_header(stems.body.body_logical_len(), tx_end)?;
-    require_body_header(stems.spent.body_logical_len(), sp_end)?;
-    if !prune_seqsigwit_mode {
-        require_body_header(stems.seqsigwit.body_logical_len(), in_end)?;
-    }
     let ahead = stems.body.body_logical_len() > tx_end
         || stems.spent.body_logical_len() > sp_end
         || (!prune_seqsigwit_mode && stems.seqsigwit.body_logical_len() > in_end);
@@ -1023,14 +1031,34 @@ pub fn repair_class_a_count_skew(
     Ok(true)
 }
 
-fn require_body_header(header: u64, end: u64) -> Result<(), StoreError> {
-    if header < end {
-        Err(StoreError::Corrupt(
-            "invariant: body header short of locator",
-        ))
-    } else {
-        Ok(())
+/// Largest create count `<= n` whose stem ends every body header still covers.
+///
+/// Stem ends grow with the count, so the covered counts are a prefix.
+fn body_headers_cover(
+    stems: &ClassASkewStems<'_>,
+    n: u64,
+    prune_seqsigwit_mode: bool,
+) -> Result<u64, StoreError> {
+    let fits = |count: u64| -> Result<bool, StoreError> {
+        let (tx_end, sp_end, in_end) = class_a_skew_stem_ends(stems, count, prune_seqsigwit_mode)?;
+        Ok(tx_end <= stems.body.body_logical_len()
+            && sp_end <= stems.spent.body_logical_len()
+            && (prune_seqsigwit_mode || in_end <= stems.seqsigwit.body_logical_len()))
+    };
+    if fits(n)? {
+        return Ok(n);
     }
+    // Invariant: fits(lo) and !fits(hi). Count 0 is the file headers.
+    let (mut lo, mut hi) = (0u64, n);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if fits(mid)? {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok(lo)
 }
 
 fn file_header_behind(file: &crate::file::TableFile) -> bool {
