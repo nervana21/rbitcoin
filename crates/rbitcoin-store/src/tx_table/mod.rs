@@ -960,10 +960,16 @@ pub fn class_a_skew_assert_aligned(
 }
 
 #[doc(hidden)]
+///
+/// `committed` is the highest create a durable Class C row names. The body
+/// headers may cut a tail above it. Below it the image was torn by a binary
+/// without the Class A barrier: open refuses rather than free numbers that
+/// spends and postings still name.
 pub fn repair_class_a_count_skew(
     stems: ClassASkewStems<'_>,
     prune_seqsigwit_mode: bool,
     input_existed: bool,
+    committed: u64,
 ) -> Result<bool, StoreError> {
     let n_loc = stems.create_loc.count();
     let n_txids = stems.txids.count();
@@ -975,7 +981,23 @@ pub fn repair_class_a_count_skew(
     let stem =
         class_a_skew_target_count(n_loc, n_txids, n_seqsigwit_loc, prune_seqsigwit_mode, None)
             .unwrap_or(n_loc);
+    // A header can land without the rows behind it. Past the committed
+    // creates, the first one that does not decode starts the torn tail.
+    let stem = decodable_prefix(&stems, committed, stem, prune_seqsigwit_mode)?;
+    // A range read decodes its whole locator window up to the count, so a
+    // zeroed row past `stem` would fail reads of the creates kept below it.
+    if stems.create_loc.count() > stem {
+        stems.create_loc.truncate_to_count(stem)?;
+    }
+    if !prune_seqsigwit_mode && stems.seqsigwit_loc.count() > stem {
+        stems.seqsigwit_loc.truncate_to_count(stem)?;
+    }
     let covered = body_headers_cover(&stems, stem, prune_seqsigwit_mode)?;
+    if covered < stem && covered < committed {
+        return Err(StoreError::Corrupt(
+            "invariant: body header short of locator",
+        ));
+    }
     // The short-input probe reads the witness row past the input count. Run
     // it only inside the covered prefix, where that row is on disk.
     let short_input = if stems.input.count() < covered {
@@ -1034,6 +1056,56 @@ pub fn repair_class_a_count_skew(
     )?;
     class_a_skew_assert_aligned(&stems, prune_seqsigwit_mode)?;
     Ok(true)
+}
+
+/// Largest count `<= n` whose creates past `committed` all decode.
+///
+/// Only the uncommitted tail is read: Class C names nothing in it, and the
+/// barrier synced everything at or below `committed`.
+fn decodable_prefix(
+    stems: &ClassASkewStems<'_>,
+    committed: u64,
+    n: u64,
+    prune_seqsigwit_mode: bool,
+) -> Result<u64, StoreError> {
+    for id in committed.saturating_add(1)..=n {
+        if !create_decodes(stems, Fk(id), prune_seqsigwit_mode)? {
+            return Ok(id - 1);
+        }
+    }
+    Ok(n)
+}
+
+/// `false` for a torn row (corrupt or missing); an IO error stops open.
+fn create_decodes(
+    stems: &ClassASkewStems<'_>,
+    fk: Fk,
+    prune_seqsigwit_mode: bool,
+) -> Result<bool, StoreError> {
+    let torn = |e: StoreError| match e {
+        StoreError::Io { .. } => Err(e),
+        _ => Ok(false),
+    };
+    let pair = match stems.create_loc.range_batch(&[fk]) {
+        Ok(rows) => match rows.into_iter().next().flatten() {
+            Some(pair) => pair,
+            None => return Ok(false),
+        },
+        Err(e) => return torn(e),
+    };
+    let outs = stems.body.with_bytes_at(pair.txout.0, pair.txout.1, |b| {
+        decode_packed_tx_outs_with_spender_rels_secret(b, pair.n_out, None).map(|_| ())
+    });
+    if let Err(e) = outs {
+        return torn(e);
+    }
+    if prune_seqsigwit_mode {
+        return Ok(true);
+    }
+    match stems.seqsigwit_loc.range_batch(&[fk]) {
+        Ok(rows) => Ok(rows.into_iter().next().flatten().is_some()),
+        Err(e) => torn(e),
+    }
 }
 
 /// Largest create count `<= n` whose stem ends every body header still covers.
@@ -1299,14 +1371,18 @@ impl TxTable {
     }
 
     pub fn open_with_opts(dir: &Path, opts: HeadOpenOpts) -> Result<Self, StoreError> {
-        Self::open_seqsigwit(dir, dir, opts)
+        Self::open_seqsigwit(dir, dir, opts, 0)
     }
 
     /// Open Class A stems; `seqsigwit` may live in a different directory.
+    ///
+    /// `committed` is the highest create a durable Class C row names (`0`
+    /// outside a `Store`). See [`repair_class_a_count_skew`].
     pub fn open_seqsigwit(
         dir: &Path,
         seqsigwit_dir: &Path,
         opts: HeadOpenOpts,
+        committed: u64,
     ) -> Result<Self, StoreError> {
         crate::store::rename_legacy_inwit_files(dir)?;
         crate::store::rename_legacy_input_files(dir)?;
@@ -1402,6 +1478,7 @@ impl TxTable {
             },
             stem_retired,
             input_existed,
+            committed,
         )?;
         let n_bodies = create_loc.count();
         if txstat.count() != n_bodies {

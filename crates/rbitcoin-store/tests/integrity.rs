@@ -896,7 +896,7 @@ fn pruned_short_input_skips_the_witness_locator() {
         txstat: &s.txs.txstat,
         input: &s.txs.input,
     };
-    rbitcoin_store::tx_table::repair_class_a_count_skew(stems, true, true).unwrap();
+    rbitcoin_store::tx_table::repair_class_a_count_skew(stems, true, true, 0).unwrap();
     drop(disarm);
     assert_eq!(s.txs.count(), 1, "repair stops at the short input");
     assert_eq!(s.txs.input.count(), 1);
@@ -1359,15 +1359,8 @@ fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
     let all = (1u32 << n) - 1;
     // (dropped files, file whose header page landed without its new rows)
     let mut cases = vec![(0, None), (all, None)];
-    for (bit, rel) in changed.iter().enumerate() {
+    for bit in 0..n {
         cases.extend([(1u32 << bit, None), (all & !(1u32 << bit), None)]);
-        // A locator header that lands without its rows still refuses open
-        // ("overflow missing"): a zeroed row reads as an overflow escape.
-        // Telling that tail from a real row needs the sealed create count
-        // at locator open. Not covered here.
-        if ["create.loc", "seqsigwit.loc"].contains(&rel.to_str().unwrap_or("")) {
-            continue;
-        }
         cases.extend([(0, Some(bit)), (all & !(1u32 << bit), Some(bit))]);
     }
     let header = rbitcoin_store::file::FILE_HEADER_LEN;
@@ -1410,6 +1403,11 @@ fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
             "dropped {dropped:?}: sealed create lost"
         );
         assert_eq!(s.txs.body_txid(Fk(1)).unwrap(), [0u8; 32]);
+        for fk in 1..=s.txs.count() {
+            if let Err(e) = s.txs.get_meta_and_outputs(Fk(fk)) {
+                panic!("dropped {dropped:?}: kept create {fk} does not decode: {e}");
+            }
+        }
         connect_coinbase(&s, &write, 1, genesis, parent);
         assert_eq!(
             s.flush_class_c_tip()
@@ -1422,32 +1420,77 @@ fn every_unsynced_archive_subset_reopens_at_the_sealed_tip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A spend page commit that names a spender with no Class C row is not
-/// served after reopen.
+/// A spend page commit never names a spender whose archive is not synced.
 ///
-/// The Class A sync fails after the commit is written, so the spender's
-/// create may be cut and its number taken. Open drops the unstrong spend
-/// before any later transaction can reuse that number.
+/// In IBD the spender is strong on the RAM tip while its barrier is still in
+/// flight. If its archive bytes are lost, open cuts that create and another
+/// block can reuse the number; the reopen filter then sees a strong spender
+/// and keeps the stale spend. The checkpoint syncs Class A after it freezes
+/// the notes and before it renames the commit.
 #[test]
-fn spend_commit_naming_an_unsealed_spender_is_dropped_on_reopen() {
+fn spend_commit_waits_for_the_spender_archive_sync() {
+    for fail in [false, true] {
+        let dir = tmp();
+        let s = Store::create_tiny(&dir).unwrap();
+        let write = rbitcoin_store::ClassCWrite::for_test();
+        let (genesis, parent_hash) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+        s.height_fence_extend(Height(0), genesis).unwrap();
+        assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(0)));
+        let parent = s.header_txs.get_list(genesis).unwrap().unwrap()[0];
+        let (h1, _) = connect_coinbase(&s, &write, 1, genesis, parent_hash);
+        s.height_fence_extend(Height(1), h1).unwrap();
+        let spender = s.header_txs.get_list(h1).unwrap().unwrap()[0];
+        assert!(s.is_confirmed_strong(spender).unwrap());
+        s.put_spend_create(parent, 0, spender, 0).unwrap();
+        s.note_spend_snapshot(1);
+        if fail {
+            rbitcoin_store::io_handle::arm_fail_sync(s.txs.txids.file.io_handle(), 1);
+            assert!(s.checkpoint_spend_through(1).is_err());
+            assert!(
+                !dir.join("spend.pages.commit").exists(),
+                "the page commit named spender {spender:?} before its archive was synced"
+            );
+        } else {
+            s.checkpoint_spend_through(1).unwrap();
+            assert!(
+                dir.join("spend.pages.commit").exists(),
+                "control: the checkpoint wrote no commit"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Class C sealed height 1, then its body headers fell back to height 0.
+///
+/// The barrier rules this out for this binary, so the image was torn by an
+/// older one. Its committed rows name create 2: cutting it would let a
+/// later transaction reuse that number under stale spends and postings.
+/// Open refuses, as before the barrier.
+#[test]
+fn body_header_short_of_a_committed_create_still_refuses() {
     let dir = tmp();
     let s = Store::create_tiny(&dir).unwrap();
     let write = rbitcoin_store::ClassCWrite::for_test();
-    let (genesis, _) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
-    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(0)));
-    let parent = s.header_txs.get_list(genesis).unwrap().unwrap()[0];
-    let spender = put_coinbase(&s, 9);
-    s.put_spend_create(parent, 0, spender, 0).unwrap();
-    s.note_spend_snapshot(0);
-    rbitcoin_store::io_handle::arm_fail_sync(s.txs.body.body.io_handle(), 1);
-    assert!(s.checkpoint_spend_through(0).is_err());
+    let (genesis, parent) = connect_coinbase(&s, &write, 0, Fk::NULL, [0u8; 32]);
+    s.flush_class_c_tip().unwrap();
+    let tx_end = on_disk_hwm(&dir.join("txout.body"));
+    let sp_end = on_disk_hwm(&dir.join("spent.body"));
+    let in_end = on_disk_hwm(&dir.join("seqsigwit.body"));
+    connect_coinbase(&s, &write, 1, genesis, parent);
+    assert_eq!(s.flush_class_c_tip().unwrap(), Some(Height(1)));
     drop(s);
-    let s = Store::open_tiny(&dir).unwrap();
-    let (off, len) = s.txs.spent_range(parent).unwrap();
-    let (_, field, _) = s.txs.get_output_spender_meta_at(off, len, 0).unwrap();
-    assert!(
-        field.is_null(),
-        "reopen served spender {field:?}, which no Class C row names"
-    );
+    write_hwm(&dir.join("txout.body"), tx_end);
+    write_hwm(&dir.join("spent.body"), sp_end);
+    write_hwm(&dir.join("seqsigwit.body"), in_end);
+    match Store::open_tiny(&dir) {
+        Err(rbitcoin_store::StoreError::Corrupt(m)) if m.contains("body header short") => {}
+        Err(e) => panic!("open returned {e}"),
+        Ok(s) => panic!(
+            "open cut committed creates: count {} tip {:?}",
+            s.txs.count(),
+            s.confirmed.tip_height()
+        ),
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

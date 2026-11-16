@@ -565,7 +565,12 @@ impl Store {
         if layout.is_split() {
             refuse_cold_index_dirs(&path, &seqsigwit_dir)?;
         }
-        let txs = TxTable::open_seqsigwit(&path, &seqsigwit_dir, layout.open_opts())?;
+        let txs = TxTable::open_seqsigwit(
+            &path,
+            &seqsigwit_dir,
+            layout.open_opts(),
+            committed_create_count(&header_txs)?,
+        )?;
         if layout.is_split() {
             write_seqsigwit_reloc(&path)?;
         }
@@ -2092,6 +2097,7 @@ impl Store {
         let view = &self.utxo_view;
         let confirmed = &self.confirmed;
         let spenders = &self.spenders;
+        let txs = &self.txs;
         {
             let _g = hold_view(publish, view);
             self.txs.freeze_open_spend_pages();
@@ -2113,6 +2119,9 @@ impl Store {
                     log.cover_published_len(len());
                 }
                 spenders.sync_data_only()?;
+                // Every spender a frozen note names was appended before the
+                // freeze. Sync it before the commit can name its number.
+                txs.sync_class_a_data()?;
                 Ok(())
             },
             |_log| {
@@ -2460,6 +2469,20 @@ impl Store {
         rbitcoin_log::info!("store: shutdown flush done elapsed={:?}", t0.elapsed());
         Ok(())
     }
+}
+
+/// Highest create any durable `header_txs` range names (`0` for none).
+fn committed_create_count(header_txs: &HeaderTxsTable) -> Result<u64, StoreError> {
+    let n = header_txs.first.len().min(header_txs.count.len());
+    let mut end = 0u64;
+    for i in 0..n {
+        let count = header_txs.count.get(i)?;
+        let first = header_txs.first.get(i)?;
+        if count != 0 && first != 0 {
+            end = end.max(first.saturating_add(count).saturating_sub(1));
+        }
+    }
+    Ok(end)
 }
 
 fn incomplete_creation_files(layout: &StoreLayout) -> bool {
