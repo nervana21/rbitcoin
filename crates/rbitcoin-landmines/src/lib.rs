@@ -19,6 +19,8 @@ pub mod challenge;
 pub mod output;
 pub mod pok;
 pub mod settlement;
+pub mod staked;
+pub mod timed_commit;
 
 pub use bitcoin::{Amount, OutPoint};
 
@@ -33,3 +35,12 @@ pub use settlement::{SettlementPolicy, StakeOutcome, ValueDestination};
 pub use challenge::{SpendPath, PathAdmission, CreateChallenge, ChallengeSchedule, ChallengeUtxo, Phase};
 
 pub use landmine::{fund_landmine, reclaim_with_landmine, Landmine, LandmineReclaim};
+
+pub use timed_commit::{SealedBlob, StubTimedCommit, TimedCommit, TimedCommitment};
+
+pub use staked::{
+    commit_staked_bid, force_open_staked_bid, open_staked_auction, register_staked_bid,
+    self_reveal_staked_bid, settle_staked_auction, BidDepthLimit, RegisteredStakedBid, StakeCommit,
+    StakedAuction, StakedBid, StakedBidCommitment, StakedBidReveal, StakedBidStatus,
+    StakedSettlement, StakedWin, StubStakeCommit,
+};
