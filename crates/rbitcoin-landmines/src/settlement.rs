@@ -15,13 +15,18 @@ pub enum ValueDestination {
 }
 
 /// Losing staked bid handling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StakeOutcome {
     /// Stake returned after lose.
-    #[default]
     ReturnStake,
     /// Stake slashed.
     Slash,
+}
+
+impl Default for StakeOutcome {
+    fn default() -> Self {
+        Self::Slash
+    }
 }
 
 /// Bundle of unresolved design knobs. Defaults are explicit, not consensus law.

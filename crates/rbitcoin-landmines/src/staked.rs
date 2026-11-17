@@ -4,10 +4,11 @@
 //! bidder cannot free-abandon: settle requires every registered bid opened
 //! (self-reveal or force-open after auction end). Default loser stake = slash.
 
+use bitcoin::hashes::Hash;
 use bitcoin::{Amount, OutPoint};
-use bitcoin_hashes::{sha256, Hash};
+use bitcoin_hashes::sha256;
 
-use crate::challenge::ChallengeUtxo;
+use crate::challenge::{ChallengeUtxo, PathAdmission, Phase, SpendPath};
 use crate::clock::ActivationClock;
 use crate::crypto::QuantumSafePubKey;
 use crate::error::{Error, Result};
@@ -44,6 +45,78 @@ pub struct StakedBidReveal {
     pub payout_key: QuantumSafePubKey,
     /// Secret preimage (real leaf scheme TBD).
     pub proof: Vec<u8>,
+}
+
+impl StakedBidReveal {
+    fn encode(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(36 + 8 + 36 + 8 + 32 + 4 + self.proof.len());
+        data.extend_from_slice(self.id.txid.as_byte_array());
+        data.extend_from_slice(&self.id.vout.to_le_bytes());
+        data.extend_from_slice(&self.stake.to_sat().to_le_bytes());
+        data.extend_from_slice(self.target_vulnerable.txid.as_byte_array());
+        data.extend_from_slice(&self.target_vulnerable.vout.to_le_bytes());
+        data.extend_from_slice(&self.bid.to_sat().to_le_bytes());
+        data.extend_from_slice(&self.payout_key.0);
+        let proof_len = u32::try_from(self.proof.len()).unwrap_or(u32::MAX);
+        data.extend_from_slice(&proof_len.to_le_bytes());
+        data.extend_from_slice(&self.proof);
+        data
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        const FIXED: usize = 32 + 4 + 8 + 32 + 4 + 8 + 32 + 4;
+        if bytes.len() < FIXED {
+            return Err(Error::InvalidTimedOpen);
+        }
+        let mut id_txid = [0u8; 32];
+        id_txid.copy_from_slice(&bytes[0..32]);
+        let id_vout = u32::from_le_bytes(
+            bytes[32..36]
+                .try_into()
+                .map_err(|_| Error::InvalidTimedOpen)?,
+        );
+        let stake = Amount::from_sat(u64::from_le_bytes(
+            bytes[36..44]
+                .try_into()
+                .map_err(|_| Error::InvalidTimedOpen)?,
+        ));
+        let mut target_txid = [0u8; 32];
+        target_txid.copy_from_slice(&bytes[44..76]);
+        let target_vout = u32::from_le_bytes(
+            bytes[76..80]
+                .try_into()
+                .map_err(|_| Error::InvalidTimedOpen)?,
+        );
+        let bid = Amount::from_sat(u64::from_le_bytes(
+            bytes[80..88]
+                .try_into()
+                .map_err(|_| Error::InvalidTimedOpen)?,
+        ));
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes[88..120]);
+        let proof_len = u32::from_le_bytes(
+            bytes[120..124]
+                .try_into()
+                .map_err(|_| Error::InvalidTimedOpen)?,
+        ) as usize;
+        if bytes.len() != FIXED + proof_len {
+            return Err(Error::InvalidTimedOpen);
+        }
+        Ok(Self {
+            id: OutPoint {
+                txid: bitcoin::Txid::from_byte_array(id_txid),
+                vout: id_vout,
+            },
+            stake,
+            target_vulnerable: OutPoint {
+                txid: bitcoin::Txid::from_byte_array(target_txid),
+                vout: target_vout,
+            },
+            bid,
+            payout_key: QuantumSafePubKey(key),
+            proof: bytes[124..].to_vec(),
+        })
+    }
 }
 
 /// Committed staked bid waiting for auction registration.
@@ -209,43 +282,222 @@ pub fn open_staked_auction(challenge: ChallengeUtxo, depth: BidDepthLimit) -> St
     }
 }
 
+fn require_auction_phase(clock: &impl ActivationClock, auction: &StakedAuction) -> Result<()> {
+    match auction
+        .challenge
+        .admit_path(clock, &SpendPath::AuctionBid)?
+    {
+        PathAdmission::PathAllowed { .. } => Ok(()),
+        PathAdmission::TimeoutSpend { .. } => {
+            Err(Error::Unimplemented("auction produced timeout spend"))
+        }
+    }
+}
+
+fn check_reveal_against_committed(
+    commit: &impl StakeCommit,
+    committed: &StakedBid,
+    reveal: &StakedBidReveal,
+    auction: &StakedAuction,
+) -> Result<()> {
+    if !commit.verify(&committed.commitment, reveal) {
+        return Err(Error::InvalidStakeCommit);
+    }
+    if reveal.id != committed.id || reveal.stake != committed.stake {
+        return Err(Error::InvalidStakeCommit);
+    }
+    if reveal.target_vulnerable != auction.challenge.vulnerable_id {
+        return Err(Error::TargetMismatch);
+    }
+    if reveal.stake < reveal.bid {
+        return Err(Error::StakeTooSmall {
+            bid: reveal.bid,
+            stake: reveal.stake,
+        });
+    }
+    Ok(())
+}
+
 /// Seal and register a pre-qday staked bid into the auction. Returns index.
 pub fn register_staked_bid(
-    _clock: &impl ActivationClock,
-    _timed: &impl TimedCommit,
-    _commit: &impl StakeCommit,
-    _auction: &mut StakedAuction,
-    _committed: &StakedBid,
-    _reveal: &StakedBidReveal,
+    clock: &impl ActivationClock,
+    timed: &impl TimedCommit,
+    commit: &impl StakeCommit,
+    auction: &mut StakedAuction,
+    committed: &StakedBid,
+    reveal: &StakedBidReveal,
 ) -> Result<usize> {
-    Err(Error::Unimplemented("staked register"))
+    require_auction_phase(clock, auction)?;
+    check_reveal_against_committed(commit, committed, reveal, auction)?;
+    let force_open_at = auction.challenge.schedule.auction_end;
+    let (timed_commitment, sealed) = timed.seal(&reveal.encode(), force_open_at);
+    let index = auction.registered.len();
+    auction.registered.push(RegisteredStakedBid {
+        stake_commitment: committed.commitment.clone(),
+        timed_commitment,
+        sealed,
+        stake: committed.stake,
+        id: committed.id,
+        status: StakedBidStatus::Sealed,
+    });
+    Ok(index)
+}
+
+fn claim_win(auction: &mut StakedAuction, reveal: &StakedBidReveal) -> Result<StakedWin> {
+    if auction.reveals >= auction.depth.0 {
+        return Err(Error::BidDepthExceeded {
+            limit: auction.depth.0,
+        });
+    }
+    if let Some(current) = &auction.winner {
+        if reveal.bid >= current.reveal.bid {
+            return Err(Error::BidNotLower {
+                bid: reveal.bid,
+                current: current.reveal.bid,
+            });
+        }
+        auction.remaining_collateral = auction
+            .remaining_collateral
+            .checked_add(current.collateral_taken)
+            .ok_or(Error::AmountOverflow)?;
+    }
+    if reveal.bid > auction.remaining_collateral {
+        return Err(Error::BidTooHigh {
+            bid: reveal.bid,
+            remaining: auction.remaining_collateral,
+        });
+    }
+    auction.remaining_collateral = auction
+        .remaining_collateral
+        .checked_sub(reveal.bid)
+        .ok_or(Error::AmountOverflow)?;
+    auction.vulnerable_burned = true;
+    auction.reveals = auction
+        .reveals
+        .checked_add(1)
+        .ok_or(Error::AmountOverflow)?;
+    let win = StakedWin {
+        reveal: reveal.clone(),
+        collateral_taken: reveal.bid,
+    };
+    auction.winner = Some(win.clone());
+    Ok(win)
 }
 
 /// Self-reveal a registered staked bid during the auction window.
 pub fn self_reveal_staked_bid(
-    _clock: &impl ActivationClock,
-    _timed: &impl TimedCommit,
-    _auction: &mut StakedAuction,
-    _index: usize,
-    _reveal: &StakedBidReveal,
+    clock: &impl ActivationClock,
+    timed: &impl TimedCommit,
+    auction: &mut StakedAuction,
+    index: usize,
+    reveal: &StakedBidReveal,
 ) -> Result<StakedWin> {
-    Err(Error::Unimplemented("staked self_reveal"))
+    require_auction_phase(clock, auction)?;
+    let entry = auction
+        .registered
+        .get_mut(index)
+        .ok_or(Error::UnknownBidIndex { index })?;
+    match &entry.status {
+        StakedBidStatus::Opened(_) => return Err(Error::AlreadyOpened { index }),
+        StakedBidStatus::Sealed => {}
+    }
+    let payload = reveal.encode();
+    if !timed.verify_open(&entry.timed_commitment, &payload) {
+        return Err(Error::InvalidTimedOpen);
+    }
+    if entry.sealed.payload != payload {
+        return Err(Error::InvalidTimedOpen);
+    }
+    if reveal.id != entry.id || reveal.stake != entry.stake {
+        return Err(Error::InvalidStakeCommit);
+    }
+    entry.status = StakedBidStatus::Opened(reveal.clone());
+    claim_win(auction, reveal)
 }
 
 /// Force-open a registered staked bid after `auction_end`, then claim if eligible.
 pub fn force_open_staked_bid(
-    _clock: &impl ActivationClock,
-    _timed: &impl TimedCommit,
-    _auction: &mut StakedAuction,
-    _index: usize,
+    clock: &impl ActivationClock,
+    timed: &impl TimedCommit,
+    auction: &mut StakedAuction,
+    index: usize,
 ) -> Result<StakedWin> {
-    Err(Error::Unimplemented("staked force_open"))
+    let now = clock.now();
+    let entry = auction
+        .registered
+        .get_mut(index)
+        .ok_or(Error::UnknownBidIndex { index })?;
+    let reveal = match &entry.status {
+        StakedBidStatus::Opened(r) => r.clone(),
+        StakedBidStatus::Sealed => {
+            let payload = timed.force_open(&entry.sealed, now)?;
+            if !timed.verify_open(&entry.timed_commitment, &payload) {
+                return Err(Error::InvalidTimedOpen);
+            }
+            let reveal = StakedBidReveal::decode(&payload)?;
+            if reveal.id != entry.id || reveal.stake != entry.stake {
+                return Err(Error::InvalidStakeCommit);
+            }
+            entry.status = StakedBidStatus::Opened(reveal.clone());
+            reveal
+        }
+    };
+    if let Some(win) = &auction.winner {
+        if win.reveal.id == reveal.id {
+            return Ok(win.clone());
+        }
+    }
+    claim_win(auction, &reveal)
 }
 
 /// Settle after auction timeout (`Phase::Timeout`).
 pub fn settle_staked_auction(
-    _clock: &impl ActivationClock,
-    _auction: &StakedAuction,
+    clock: &impl ActivationClock,
+    auction: &StakedAuction,
 ) -> Result<StakedSettlement> {
-    Err(Error::Unimplemented("staked settle"))
+    match auction
+        .challenge
+        .admit_path(clock, &SpendPath::TimeoutSpend)
+    {
+        Ok(_) | Err(Error::WrongPhase { .. }) => {}
+        Err(e) => return Err(e),
+    }
+    if auction.challenge.phase(clock) != Phase::Timeout {
+        return Err(Error::WrongPhase {
+            at: auction.challenge.phase(clock),
+            required: Phase::Timeout,
+        });
+    }
+    for (index, entry) in auction.registered.iter().enumerate() {
+        if matches!(entry.status, StakedBidStatus::Sealed) {
+            return Err(Error::BidStillSealed { index });
+        }
+    }
+    let winner_id = auction.winner.as_ref().map(|w| w.reveal.id);
+    let mut slashed_stake = Amount::ZERO;
+    if auction.settlement.losing_stake == StakeOutcome::Slash {
+        for entry in &auction.registered {
+            let StakedBidStatus::Opened(reveal) = &entry.status else {
+                continue;
+            };
+            let is_winner = winner_id == Some(reveal.id);
+            if !is_winner {
+                slashed_stake = slashed_stake
+                    .checked_add(reveal.stake)
+                    .ok_or(Error::AmountOverflow)?;
+            }
+        }
+    }
+    let winner_payout = auction
+        .winner
+        .as_ref()
+        .map(|w| (w.reveal.payout_key.clone(), w.collateral_taken));
+    Ok(StakedSettlement {
+        vulnerable_burned: auction.vulnerable_burned,
+        winner_payout,
+        unused_collateral: auction.remaining_collateral,
+        unused_destination: auction.settlement.unused_collateral,
+        slashed_stake,
+        losing_stake: auction.settlement.losing_stake,
+    })
 }
