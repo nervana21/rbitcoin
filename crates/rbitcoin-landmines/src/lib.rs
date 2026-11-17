@@ -18,6 +18,7 @@ pub mod landmine;
 pub mod challenge;
 pub mod output;
 pub mod pok;
+pub mod sats_auction;
 pub mod settlement;
 pub mod staked;
 pub mod timed_commit;
@@ -44,3 +45,9 @@ pub use staked::{
     StakedAuction, StakedBid, StakedBidCommitment, StakedBidReveal, StakedBidStatus,
     StakedSettlement, StakedWin, StubStakeCommit,
 };
+
+pub use sats_auction::{
+    force_open_sats_bid, open_sats_auction, register_sats_bid, self_reveal_sats_bid,
+    settle_sats_auction, RegisteredSatsBid, SatsAuction, SatsBid, SatsBidStatus, SatsSettlement,
+};
+
